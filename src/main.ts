@@ -8,6 +8,7 @@ import {
 } from "electron";
 import * as path from "path";
 import { createTray, updateTrayMenu } from "./tray";
+import { initAutoUpdater } from "./updater";
 
 // Prevent the OS from throttling background renderers when the window is hidden.
 // Twilio Voice WebSocket / Notification timers must keep running in the tray.
@@ -46,6 +47,12 @@ function createMainWindow(): BrowserWindow {
     backgroundColor: "#0b1220",
     show: false,
     autoHideMenuBar: true,
+    // Embed the macOS traffic lights INSIDE the app's top bar so we get back
+    // the ~28px strip that the default title bar otherwise takes. The web
+    // app's purple header has plenty of padding for the lights to sit cleanly
+    // in the top-left.
+    titleBarStyle: "hiddenInset",
+    trafficLightPosition: { x: 16, y: 18 },
     webPreferences: {
       contextIsolation: true,
       nodeIntegration: false,
@@ -219,6 +226,10 @@ app.whenReady().then(() => {
     },
     getWindow: getMainWindow,
   });
+
+  // Wire silent autoupdater (GitHub Releases). First check fires 10s after
+  // launch so it doesn't compete with login + Twilio Voice on cold start.
+  initAutoUpdater();
 
   // Reload the web app on wake — Twilio Voice WebSocket usually drops during
   // sleep and the Next.js app's auto-reconnect is unreliable.

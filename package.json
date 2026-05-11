@@ -15,7 +15,9 @@
     "dev": "npm run build:ts && electron .",
     "start": "electron .",
     "build:mac": "npm run clean && npm run build:ts && electron-builder --mac --publish never",
-    "build:mac:unsigned": "npm run clean && npm run build:ts && CSC_IDENTITY_AUTO_DISCOVERY=false electron-builder --mac --publish never -c.mac.identity=null"
+    "build:mac:unsigned": "npm run clean && npm run build:ts && CSC_IDENTITY_AUTO_DISCOVERY=false electron-builder --mac --publish never -c.mac.identity=null",
+    "release:mac": "npm run clean && npm run build:ts && electron-builder --mac --publish always",
+    "release:mac:unsigned": "npm run clean && npm run build:ts && CSC_IDENTITY_AUTO_DISCOVERY=false electron-builder --mac --publish always -c.mac.identity=null"
   },
   "devDependencies": {
     "@electron/notarize": "^2.5.0",
@@ -48,11 +50,15 @@
       "target": [
         {
           "target": "dmg",
-          "arch": ["arm64"]
+          "arch": [
+            "arm64"
+          ]
         },
         {
           "target": "zip",
-          "arch": ["arm64"]
+          "arch": [
+            "arm64"
+          ]
         }
       ],
       "hardenedRuntime": true,
@@ -70,9 +76,28 @@
       "title": "Eskew Phone ${version}",
       "icon": "build/icon.icns",
       "contents": [
-        { "x": 130, "y": 220 },
-        { "x": 410, "y": 220, "type": "link", "path": "/Applications" }
+        {
+          "x": 130,
+          "y": 220
+        },
+        {
+          "x": 410,
+          "y": 220,
+          "type": "link",
+          "path": "/Applications"
+        }
       ]
-    }
+    },
+    "publish": [
+      {
+        "provider": "github",
+        "owner": "chrislanz20",
+        "repo": "eskew-phone-desktop",
+        "releaseType": "release"
+      }
+    ]
+  },
+  "dependencies": {
+    "electron-updater": "^6.8.3"
   }
 }
