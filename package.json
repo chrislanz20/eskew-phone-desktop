@@ -1,0 +1,78 @@
+{
+  "name": "eskew-phone-desktop",
+  "version": "1.0.0",
+  "description": "Eskew Phone — desktop wrapper for eskewphone.info",
+  "main": "dist/main.js",
+  "author": {
+    "name": "SaveYa Tech",
+    "email": "chris@saveyatech.com"
+  },
+  "license": "UNLICENSED",
+  "private": true,
+  "scripts": {
+    "clean": "rimraf dist out",
+    "build:ts": "tsc -p tsconfig.json",
+    "dev": "npm run build:ts && electron .",
+    "start": "electron .",
+    "build:mac": "npm run clean && npm run build:ts && electron-builder --mac --publish never",
+    "build:mac:unsigned": "npm run clean && npm run build:ts && CSC_IDENTITY_AUTO_DISCOVERY=false electron-builder --mac --publish never -c.mac.identity=null"
+  },
+  "devDependencies": {
+    "@electron/notarize": "^2.5.0",
+    "@types/node": "^22.7.5",
+    "dotenv": "^16.4.5",
+    "electron": "^33.0.2",
+    "electron-builder": "^25.1.8",
+    "rimraf": "^6.0.1",
+    "typescript": "^5.6.3"
+  },
+  "build": {
+    "appId": "com.saveyatech.eskewphone.desktop",
+    "productName": "Eskew Phone",
+    "copyright": "Copyright © 2025 SaveYa Tech",
+    "directories": {
+      "buildResources": "build",
+      "output": "out"
+    },
+    "afterSign": "scripts/notarize.js",
+    "files": [
+      "dist/**/*",
+      "assets/**/*",
+      "package.json"
+    ],
+    "extraMetadata": {
+      "main": "dist/main.js"
+    },
+    "mac": {
+      "category": "public.app-category.business",
+      "target": [
+        {
+          "target": "dmg",
+          "arch": ["arm64"]
+        },
+        {
+          "target": "zip",
+          "arch": ["arm64"]
+        }
+      ],
+      "hardenedRuntime": true,
+      "gatekeeperAssess": false,
+      "entitlements": "build/entitlements.mac.plist",
+      "entitlementsInherit": "build/entitlements.mac.plist",
+      "notarize": false,
+      "extendInfo": {
+        "NSMicrophoneUsageDescription": "Eskew Phone needs microphone access to make and receive calls.",
+        "NSCameraUsageDescription": "Eskew Phone may use the camera for video features.",
+        "LSUIElement": false
+      }
+    },
+    "dmg": {
+      "title": "Eskew Phone ${version}",
+      "icon": "build/icon.icns",
+      "contents": [
+        { "x": 130, "y": 220 },
+        { "x": 410, "y": 220, "type": "link", "path": "/Applications" }
+      ]
+    }
+  }
+}
