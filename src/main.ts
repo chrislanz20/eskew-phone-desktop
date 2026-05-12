@@ -1,6 +1,8 @@
 import {
   app,
   BrowserWindow,
+  ipcMain,
+  nativeImage,
   Notification,
   powerMonitor,
   session,
@@ -60,6 +62,7 @@ function createMainWindow(): BrowserWindow {
       // Persist Twilio Voice + login session across launches.
       partition: "persist:eskewphone",
       backgroundThrottling: false,
+      preload: path.join(__dirname, "preload.js"),
     },
   });
 
@@ -230,6 +233,30 @@ app.whenReady().then(() => {
   // Wire silent autoupdater (GitHub Releases). First check fires 10s after
   // launch so it doesn't compete with login + Twilio Voice on cold start.
   initAutoUpdater();
+
+  // Unread badge — dock badge on Mac (with count), taskbar dot on Windows.
+  // Web app pushes the total unread count whenever it changes; 0 clears.
+  ipcMain.on("eskew:set-badge", (_event, count: number) => {
+    const n = Math.max(0, Math.floor(Number(count) || 0));
+    if (process.platform === "darwin") {
+      app.dock?.setBadge(n > 0 ? String(n) : "");
+    } else if (process.platform === "win32" && mainWindow && !mainWindow.isDestroyed()) {
+      // Windows taskbar overlay: 16x16 red dot if any unread, else clear.
+      // Using a tiny in-memory PNG so we don't need a bundled asset.
+      if (n > 0) {
+        const red = nativeImage.createFromBuffer(Buffer.from(
+          "iVBORw0KGgoAAAANSUhEUgAAABAAAAAQCAQAAAC1+jfqAAAAaklEQVR42mNgGAWj" +
+          "YBSMglEwCkbBKBgFowAEGGEC/4HoPwj/B7H/MzAwsDIwMDIwMDAyMDAxMDAxAEUYG" +
+          "BgYGRgYGBnYgIwGBgYWBgZGBgYGRgYGBgYGRgYGFgYGRgYGBgYGFgYGBgYGAJwsB" +
+          "5pBKv6sAAAAASUVORK5CYII=",
+          "base64"
+        ));
+        mainWindow.setOverlayIcon(red, `${n} unread`);
+      } else {
+        mainWindow.setOverlayIcon(null, "");
+      }
+    }
+  });
 
   // Reload the web app on wake — Twilio Voice WebSocket usually drops during
   // sleep and the Next.js app's auto-reconnect is unreliable.

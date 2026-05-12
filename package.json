@@ -1,6 +1,6 @@
 {
   "name": "eskew-phone-desktop",
-  "version": "1.0.0",
+  "version": "1.0.4",
   "description": "Eskew Phone — desktop wrapper for eskewphone.info",
   "main": "dist/main.js",
   "author": {
@@ -17,7 +17,8 @@
     "build:mac": "npm run clean && npm run build:ts && electron-builder --mac --publish never",
     "build:mac:unsigned": "npm run clean && npm run build:ts && CSC_IDENTITY_AUTO_DISCOVERY=false electron-builder --mac --publish never -c.mac.identity=null",
     "release:mac": "npm run clean && npm run build:ts && electron-builder --mac --publish always",
-    "release:mac:unsigned": "npm run clean && npm run build:ts && CSC_IDENTITY_AUTO_DISCOVERY=false electron-builder --mac --publish always -c.mac.identity=null"
+    "release:mac:unsigned": "npm run clean && npm run build:ts && CSC_IDENTITY_AUTO_DISCOVERY=false electron-builder --mac --publish always -c.mac.identity=null",
+    "build:win": "npm run build:ts && electron-builder --win --publish never"
   },
   "devDependencies": {
     "@electron/notarize": "^2.5.0",
@@ -71,6 +72,19 @@
         "NSCameraUsageDescription": "Eskew Phone may use the camera for video features.",
         "LSUIElement": false
       }
+    },
+    "win": {
+      "target": [
+        { "target": "nsis", "arch": ["x64"] }
+      ],
+      "icon": "build/icon.png",
+      "artifactName": "Eskew-Phone-${version}-Setup.${ext}"
+    },
+    "nsis": {
+      "oneClick": true,
+      "perMachine": false,
+      "allowToChangeInstallationDirectory": false,
+      "deleteAppDataOnUninstall": false
     },
     "dmg": {
       "title": "Eskew Phone ${version}",
