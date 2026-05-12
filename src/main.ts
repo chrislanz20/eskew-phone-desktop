@@ -114,6 +114,47 @@ function createMainWindow(): BrowserWindow {
     win.show();
   });
 
+  // Inject a CSS rule that makes the app's top bar draggable. The web app
+  // has a sticky brand-colored header at the top of every dashboard page —
+  // without `-webkit-app-region: drag` macOS doesn't know that strip is meant
+  // to act as a window titlebar, so the entire window is stuck where it
+  // opened. Buttons and inputs inside that strip stay clickable via
+  // `no-drag`. Injected on every page load (login + dashboard).
+  const DRAG_CSS = `
+    /* Top sticky brand header in the dashboard layout */
+    .dashboard-shell > header,
+    header.bg-brand,
+    nav.bg-brand,
+    [data-electron-drag] {
+      -webkit-app-region: drag;
+    }
+    /* Keep every interactive element inside the drag region clickable */
+    button, a, input, select, textarea,
+    [role="button"], [role="link"], [role="menuitem"],
+    [contenteditable="true"], .no-drag, [data-electron-no-drag] {
+      -webkit-app-region: no-drag;
+    }
+    /* A 28px transparent strip across the very top is ALWAYS draggable so
+       the user can grab the window from above the traffic lights even if
+       the app's header layout changes. Sits behind everything else so it
+       doesn't block clicks on real content. */
+    body::before {
+      content: "";
+      position: fixed;
+      top: 0; left: 0; right: 0;
+      height: 28px;
+      -webkit-app-region: drag;
+      pointer-events: none;
+      z-index: 9999;
+    }
+  `;
+  win.webContents.on("did-finish-load", () => {
+    win.webContents.insertCSS(DRAG_CSS).catch(() => undefined);
+  });
+  win.webContents.on("did-navigate-in-page", () => {
+    win.webContents.insertCSS(DRAG_CSS).catch(() => undefined);
+  });
+
   // Open external links in the default browser instead of new Electron windows.
   win.webContents.setWindowOpenHandler(({ url }) => {
     if (url.startsWith("http://") || url.startsWith("https://")) {
