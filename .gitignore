@@ -7,3 +7,8 @@ out/
 .env.*
 !.env.example
 .eslintcache
+
+# Icon regen safety-net backups (rollback copies created when bbox-padding
+# the EL logo on May 11; not needed in git)
+*.bak
+*.bak/
