@@ -1,7 +1,7 @@
 {
   "name": "eskew-phone-desktop",
-  "version": "1.0.5",
-  "description": "Eskew Phone — desktop wrapper for eskewphone.info",
+  "version": "1.0.6",
+  "description": "Eskew Phone \u2014 desktop wrapper for eskewphone.info",
   "main": "dist/main.js",
   "author": {
     "name": "SaveYa Tech",
@@ -18,7 +18,9 @@
     "build:mac:unsigned": "npm run clean && npm run build:ts && CSC_IDENTITY_AUTO_DISCOVERY=false electron-builder --mac --publish never -c.mac.identity=null",
     "release:mac": "npm run clean && npm run build:ts && electron-builder --mac --publish always",
     "release:mac:unsigned": "npm run clean && npm run build:ts && CSC_IDENTITY_AUTO_DISCOVERY=false electron-builder --mac --publish always -c.mac.identity=null",
-    "build:win": "npm run build:ts && electron-builder --win --publish never"
+    "build:win": "npm run build:ts && electron-builder --win --publish never",
+    "release:win": "npm run build:ts && electron-builder --win --publish always",
+    "release:all": "npm run clean && npm run build:ts && electron-builder --mac --win --publish always"
   },
   "devDependencies": {
     "@electron/notarize": "^2.5.0",
@@ -32,7 +34,7 @@
   "build": {
     "appId": "com.saveyatech.eskewphone.desktop",
     "productName": "Eskew Phone",
-    "copyright": "Copyright © 2025 SaveYa Tech",
+    "copyright": "Copyright \u00a9 2025 SaveYa Tech",
     "directories": {
       "buildResources": "build",
       "output": "out"
@@ -75,7 +77,12 @@
     },
     "win": {
       "target": [
-        { "target": "nsis", "arch": ["x64"] }
+        {
+          "target": "nsis",
+          "arch": [
+            "x64"
+          ]
+        }
       ],
       "icon": "build/icon.png",
       "artifactName": "Eskew-Phone-${version}-Setup.${ext}"
