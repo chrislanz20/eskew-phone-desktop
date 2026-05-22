@@ -26,10 +26,40 @@ app.commandLine.appendSwitch("disable-backgrounding-occluded-windows");
 app.commandLine.appendSwitch("enable-features", "WebRTC");
 
 const APP_URL = "https://eskewphone.info";
+const ERROR_PAGE = path.join(__dirname, "..", "assets", "connection-error.html");
 const SINGLE_INSTANCE = app.requestSingleInstanceLock();
 
 let mainWindow: BrowserWindow | null = null;
 let isQuitting = false;
+// Set when the renderer crashes or did-fail-load fires, so we know the next
+// successful did-finish-load is a recovery and don't treat a benign in-app
+// navigation as one.
+let isShowingErrorPage = false;
+
+function loadConnectionError(
+  win: BrowserWindow,
+  reason: { code?: number; desc?: string; url?: string } = {}
+): void {
+  const params = new URLSearchParams();
+  if (reason.code !== undefined) params.set("code", String(reason.code));
+  if (reason.desc) params.set("desc", reason.desc);
+  if (reason.url) params.set("url", reason.url);
+  const qs = params.toString();
+  const fileUrl = `file://${ERROR_PAGE}${qs ? `?${qs}` : ""}`;
+  isShowingErrorPage = true;
+  win.loadURL(fileUrl).catch(() => {
+    // If we can't even load the local error file, the install is broken;
+    // there's nothing useful left to do from this process.
+    console.error("[main] failed to load connection-error.html");
+  });
+}
+
+function loadAppUrl(win: BrowserWindow): void {
+  isShowingErrorPage = false;
+  win.loadURL(APP_URL).catch(() => {
+    // The did-fail-load handler is the canonical recovery path. swallow here.
+  });
+}
 
 if (!SINGLE_INSTANCE) {
   app.quit();
@@ -108,7 +138,7 @@ function createMainWindow(): BrowserWindow {
   const ua = win.webContents.getUserAgent() + " EskewPhoneDesktop/1.0.0";
   win.webContents.setUserAgent(ua);
 
-  win.loadURL(APP_URL);
+  loadAppUrl(win);
 
   win.once("ready-to-show", () => {
     win.show();
@@ -193,25 +223,60 @@ function createMainWindow(): BrowserWindow {
     updateTrayMenu(getMainWindow());
   });
 
-  // Surface unhandled load failures (e.g. offline) as notifications so staff
-  // notice the app needs a manual reload.
+  // Replace the black screen with a branded retry page on any non-aborted
+  // load failure (network down, Vercel hiccup, eskewphone.info DNS issue).
+  // The error page auto-retries every 8s and exposes a manual Retry button.
   win.webContents.on(
     "did-fail-load",
-    (_event, errorCode, errorDescription, validatedURL) => {
-      if (errorCode === -3) return; // ABORTED, common during navigation
+    (_event, errorCode, errorDescription, validatedURL, isMainFrame) => {
+      // ERR_ABORTED (-3) fires on every normal in-app navigation. Don't swap.
+      if (errorCode === -3) return;
+      // Sub-frame failures (iframes etc.) shouldn't replace the whole window.
+      if (!isMainFrame) return;
+      // If we're already showing the error page and it failed to load, bail —
+      // otherwise we'd loop. The page is a local file, so this is rare.
+      if (isShowingErrorPage) return;
+      // Don't re-route to error.html for failures NOT on the app URL — e.g.,
+      // mid-flight navigation to an unrelated host.
+      try {
+        const u = new URL(validatedURL);
+        if (u.hostname !== "eskewphone.info") return;
+      } catch { /* malformed URL -> still safe to recover via error page */ }
+
       console.error(
         `[main] did-fail-load ${errorCode} ${errorDescription} ${validatedURL}`
       );
+      loadConnectionError(win, {
+        code: errorCode,
+        desc: errorDescription,
+        url: validatedURL,
+      });
       try {
         new Notification({
-          title: "Eskew Phone — connection lost",
-          body: `Couldn't load ${validatedURL}. Click the tray icon to reload.`,
+          title: "Eskew Phone — can't reach the server",
+          body: "We're retrying automatically. Click the window to try now.",
         }).show();
       } catch {
-        /* ignore */
+        /* ignore — notifications may not be granted yet */
       }
     }
   );
+
+  // Renderer process died (out-of-memory, segfault, GPU crash). Recover by
+  // showing the same branded error page instead of leaving the window blank.
+  win.webContents.on("render-process-gone", (_event, details) => {
+    console.error(`[main] render-process-gone: reason=${details.reason}`);
+    if (details.reason === "clean-exit") return;
+    if (isShowingErrorPage) return;
+    loadConnectionError(win, { desc: `App crashed (${details.reason})` });
+  });
+
+  // Renderer stopped responding for >30s — usually a JS deadlock. Auto-recover.
+  win.webContents.on("unresponsive", () => {
+    console.warn("[main] webContents went unresponsive");
+    if (isShowingErrorPage) return;
+    loadConnectionError(win, { desc: "App stopped responding" });
+  });
 
   return win;
 }
@@ -274,6 +339,17 @@ app.whenReady().then(() => {
   // Wire silent autoupdater (GitHub Releases). First check fires 10s after
   // launch so it doesn't compete with login + Twilio Voice on cold start.
   initAutoUpdater();
+
+  // Retry button on connection-error.html fires this. Re-attempts the remote
+  // load; if it fails again, did-fail-load swaps back to the error page.
+  ipcMain.on("eskew:retry-connect", () => {
+    if (mainWindow && !mainWindow.isDestroyed()) loadAppUrl(mainWindow);
+  });
+
+  // Quit button on connection-error.html. Same code path as the tray Quit.
+  ipcMain.on("eskew:quit", () => {
+    quitApp();
+  });
 
   // Unread badge — dock badge on Mac (with count), taskbar dot on Windows.
   // Web app pushes the total unread count whenever it changes; 0 clears.
