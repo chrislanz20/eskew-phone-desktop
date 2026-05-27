@@ -6,6 +6,7 @@ interface TrayHandlers {
   onHide: () => void;
   onQuit: () => void;
   onReload: () => void;
+  onReset: () => void;
   getWindow: () => BrowserWindow | null;
 }
 
@@ -58,6 +59,10 @@ export function updateTrayMenu(win: BrowserWindow | null): void {
     {
       label: "Reload",
       click: () => handlers!.onReload(),
+    },
+    {
+      label: "Reset & Reload (fixes black screen)",
+      click: () => handlers!.onReset(),
     },
     { type: "separator" },
     {

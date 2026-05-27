@@ -7,5 +7,6 @@ import { contextBridge, ipcRenderer } from "electron";
 contextBridge.exposeInMainWorld("eskewDesktop", {
   setBadge: (count: number) => ipcRenderer.send("eskew:set-badge", count),
   retryConnect: () => ipcRenderer.send("eskew:retry-connect"),
+  resetReload: () => ipcRenderer.send("eskew:reset-reload"),
   quit: () => ipcRenderer.send("eskew:quit"),
 });

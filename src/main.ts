@@ -11,6 +11,11 @@ import {
 import * as path from "path";
 import { createTray, updateTrayMenu } from "./tray";
 import { initAutoUpdater } from "./updater";
+import {
+  markCleanShutdown,
+  reconcileStartup,
+  relaunchWithCacheWipe,
+} from "./recovery";
 
 // Prevent the OS from throttling background renderers when the window is hidden.
 // Twilio Voice WebSocket / Notification timers must keep running in the tray.
@@ -59,6 +64,132 @@ function loadAppUrl(win: BrowserWindow): void {
   win.loadURL(APP_URL).catch(() => {
     // The did-fail-load handler is the canonical recovery path. swallow here.
   });
+}
+
+// ---------------------------------------------------------------------------
+// Black-screen watchdog + escalating recovery
+//
+// A GPU-compositing failure or a corrupted service-worker/shader cache loads
+// "successfully" but paints pure black — so did-fail-load, render-process-gone
+// and unresponsive never fire and the window just sits there blank. We detect
+// it by capturing the rendered surface and checking whether ~every sampled
+// pixel is the dark background color, then run a graduated recovery.
+// ---------------------------------------------------------------------------
+
+// How long after a load to judge the paint — long enough for login + hydration.
+const HEALTH_CHECK_DELAY_MS = 9000;
+// A black first capture is re-checked after this to avoid a transient frame.
+const BLACK_CONFIRM_DELAY_MS = 2500;
+
+let recoveryAttempt = 0;
+let healthCheckTimer: NodeJS.Timeout | null = null;
+let recovering = false;
+
+// True if essentially every sampled pixel matches the dark background (#0b1220)
+// or pure black. A real login/dashboard render has a logo, text, form fields
+// and a brand-colored header, so it clears the threshold easily.
+async function looksBlack(win: BrowserWindow): Promise<boolean> {
+  try {
+    const img = await win.webContents.capturePage();
+    const { width, height } = img.getSize();
+    if (width === 0 || height === 0) return true;
+    const bmp = img.toBitmap(); // BGRA, length = width*height*4
+    const cols = 16;
+    const rows = 16;
+    let total = 0;
+    let dark = 0;
+    for (let r = 0; r < rows; r++) {
+      for (let c = 0; c < cols; c++) {
+        const x = Math.min(width - 1, Math.floor((c + 0.5) * (width / cols)));
+        const y = Math.min(height - 1, Math.floor((r + 0.5) * (height / rows)));
+        const idx = (y * width + x) * 4;
+        const b = bmp[idx];
+        const g = bmp[idx + 1];
+        const red = bmp[idx + 2];
+        total++;
+        // near #0b1220 (rgb 11,18,32) or near pure black
+        if (red <= 24 && g <= 28 && b <= 40) dark++;
+      }
+    }
+    return total > 0 && dark / total >= 0.99;
+  } catch {
+    // capturePage can fail mid-navigation; never let that trigger a recovery.
+    return false;
+  }
+}
+
+function clearHealthCheck(): void {
+  if (healthCheckTimer) {
+    clearTimeout(healthCheckTimer);
+    healthCheckTimer = null;
+  }
+}
+
+// (Re)arm the post-load health check. Called from did-finish-load, so it covers
+// the cold start and every reload/recovery.
+function scheduleHealthCheck(win: BrowserWindow): void {
+  clearHealthCheck();
+  healthCheckTimer = setTimeout(async () => {
+    healthCheckTimer = null;
+    if (recovering || isShowingErrorPage || win.isDestroyed()) return;
+    // Only judge the real app — never the local error page.
+    if (!win.webContents.getURL().startsWith(APP_URL)) return;
+
+    if (!(await looksBlack(win))) {
+      console.log("[main] health check: render OK");
+      recoveryAttempt = 0; // confirmed healthy paint — reset the ladder
+      return;
+    }
+    // Re-confirm to rule out a transient black frame mid-render.
+    await new Promise((res) => setTimeout(res, BLACK_CONFIRM_DELAY_MS));
+    if (recovering || isShowingErrorPage || win.isDestroyed()) return;
+    if (await looksBlack(win)) {
+      console.warn("[main] health check: black/blank render confirmed");
+      recover(win, "Black screen detected");
+    } else {
+      console.log("[main] health check: render OK (recovered from transient)");
+      recoveryAttempt = 0;
+    }
+  }, HEALTH_CHECK_DELAY_MS);
+}
+
+// Graduated recovery: cheapest fix first, hardest last. The attempt counter
+// resets to 0 on any confirmed-healthy paint.
+function recover(win: BrowserWindow, reason: string): void {
+  if (recovering || win.isDestroyed()) return;
+  recovering = true;
+  clearHealthCheck();
+  const attempt = recoveryAttempt++;
+  console.warn(`[main] recover attempt ${attempt}: ${reason}`);
+
+  if (attempt === 0) {
+    // Transient: force a fresh fetch + re-render.
+    win.webContents.reloadIgnoringCache();
+    recovering = false;
+    return;
+  }
+  if (attempt === 1) {
+    // A blank PWA shell: drop the service worker + cache storage, then reload.
+    // Login (cookies/localStorage) is intentionally preserved.
+    const ses = win.webContents.session;
+    ses
+      .clearStorageData({ storages: ["serviceworkers", "cachestorage", "shadercache"] })
+      .catch(() => undefined)
+      .then(() => ses.clearCache().catch(() => undefined))
+      .then(() => {
+        if (!win.isDestroyed()) loadAppUrl(win);
+        recovering = false;
+      });
+    return;
+  }
+  if (attempt === 2) {
+    // Corrupted GPU/shader cache on disk: relaunch and wipe it on the way up.
+    relaunchWithCacheWipe();
+    return; // process is restarting
+  }
+  // Out of automatic options — hand the user the manual recovery page.
+  loadConnectionError(win, { desc: reason });
+  recovering = false;
 }
 
 if (!SINGLE_INSTANCE) {
@@ -179,7 +310,11 @@ function createMainWindow(): BrowserWindow {
     }
   `;
   win.webContents.on("did-finish-load", () => {
+    console.log(`[main] did-finish-load: ${win.webContents.getURL()}`);
     win.webContents.insertCSS(DRAG_CSS).catch(() => undefined);
+    // Confirm the page actually painted real content (catches the black-screen
+    // case that loads "successfully" but renders blank).
+    scheduleHealthCheck(win);
   });
   win.webContents.on("did-navigate-in-page", () => {
     win.webContents.insertCSS(DRAG_CSS).catch(() => undefined);
@@ -262,20 +397,19 @@ function createMainWindow(): BrowserWindow {
     }
   );
 
-  // Renderer process died (out-of-memory, segfault, GPU crash). Recover by
-  // showing the same branded error page instead of leaving the window blank.
+  // Renderer process died (out-of-memory, segfault, GPU crash). Run the
+  // graduated recovery (reload first) instead of jumping straight to the
+  // error page.
   win.webContents.on("render-process-gone", (_event, details) => {
     console.error(`[main] render-process-gone: reason=${details.reason}`);
     if (details.reason === "clean-exit") return;
-    if (isShowingErrorPage) return;
-    loadConnectionError(win, { desc: `App crashed (${details.reason})` });
+    recover(win, `App crashed (${details.reason})`);
   });
 
   // Renderer stopped responding for >30s — usually a JS deadlock. Auto-recover.
   win.webContents.on("unresponsive", () => {
     console.warn("[main] webContents went unresponsive");
-    if (isShowingErrorPage) return;
-    loadConnectionError(win, { desc: "App stopped responding" });
+    recover(win, "App stopped responding");
   });
 
   return win;
@@ -307,6 +441,22 @@ export function quitApp(): void {
 }
 
 app.whenReady().then(() => {
+  // If the previous session ended uncleanly (a crash or a black-screen
+  // recovery relaunch), wipe the GPU/shader caches now — before any window
+  // touches them — to clear the on-disk corruption that survives restarts.
+  reconcileStartup();
+
+  // A GPU process crash leaves the renderer alive but un-composited (black).
+  // Chromium respawns the GPU process; a reload re-paints. If it keeps
+  // happening the unclean-shutdown reconcile wipes the cache next boot.
+  app.on("child-process-gone", (_event, details) => {
+    if (details.type !== "GPU") return;
+    console.error(`[main] GPU process gone: reason=${details.reason}`);
+    if (mainWindow && !mainWindow.isDestroyed() && !isShowingErrorPage) {
+      recover(mainWindow, "Graphics process crashed");
+    }
+  });
+
   // Ensure permissions on the persistent partition before the window loads.
   const persistent = session.fromPartition("persist:eskewphone");
   persistent.setPermissionRequestHandler((_wc, permission, callback) => {
@@ -333,6 +483,10 @@ app.whenReady().then(() => {
         mainWindow.webContents.reload();
       }
     },
+    onReset: () => {
+      // Same path as the error page's Reset & Reload button.
+      ipcMain.emit("eskew:reset-reload");
+    },
     getWindow: getMainWindow,
   });
 
@@ -349,6 +503,26 @@ app.whenReady().then(() => {
   // Quit button on connection-error.html. Same code path as the tray Quit.
   ipcMain.on("eskew:quit", () => {
     quitApp();
+  });
+
+  // "Reset & Reload" — tray menu + error page. Clears the service-worker /
+  // cache / shader storage (login preserved) then relaunches with a full
+  // GPU/shader cache wipe. The one-click fix for a stuck black screen.
+  ipcMain.on("eskew:reset-reload", async () => {
+    if (!mainWindow || mainWindow.isDestroyed()) {
+      relaunchWithCacheWipe();
+      return;
+    }
+    const ses = mainWindow.webContents.session;
+    try {
+      await ses.clearStorageData({
+        storages: ["serviceworkers", "cachestorage", "shadercache"],
+      });
+      await ses.clearCache();
+    } catch {
+      /* fall through to relaunch regardless */
+    }
+    relaunchWithCacheWipe();
   });
 
   // Unread badge — dock badge on Mac (with count), taskbar dot on Windows.
@@ -407,6 +581,9 @@ app.whenReady().then(() => {
 
 app.on("before-quit", () => {
   isQuitting = true;
+  // A clean quit (tray Quit / Cmd+Q / OS shutdown) clears the running-flag so
+  // the next launch knows it doesn't need to wipe the cache.
+  markCleanShutdown();
 });
 
 // Don't quit on macOS when all windows are closed — the tray keeps us alive.

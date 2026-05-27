@@ -155,8 +155,13 @@
       <p class="reason" id="reason"></p>
       <div class="actions">
         <button class="btn-primary" id="retry">Try again now</button>
+        <button class="btn-ghost" id="reset">Reset &amp; Reload</button>
         <button class="btn-ghost" id="quit">Quit Eskew Phone</button>
       </div>
+      <p class="subtitle" id="reset-hint" style="margin-top:18px;margin-bottom:0;font-size:12.5px;color:var(--text-faint);">
+        Still stuck or showing a black screen? <strong style="color:var(--text-dim);">Reset &amp; Reload</strong>
+        clears the app's cache and restarts it &mdash; you'll stay logged in.
+      </p>
       <div class="countdown" id="countdown"><span class="pulse"></span><span id="countdown-text">Retrying automatically in 8s&hellip;</span></div>
     </div>
 
@@ -227,6 +232,18 @@
       }
 
       retryBtn.addEventListener('click', doRetry);
+      const resetBtn = document.getElementById('reset');
+      resetBtn.addEventListener('click', () => {
+        if (autoRetryTimer) { clearInterval(autoRetryTimer); autoRetryTimer = null; }
+        resetBtn.setAttribute('disabled', 'true');
+        resetBtn.textContent = 'Resetting…';
+        countdownText.textContent = 'Clearing cache and restarting…';
+        try {
+          window.eskewDesktop?.resetReload?.();
+        } catch (err) {
+          window.location.reload();
+        }
+      });
       quitBtn.addEventListener('click', () => {
         try { window.eskewDesktop?.quit?.(); } catch { /* main may handle close */ }
       });
