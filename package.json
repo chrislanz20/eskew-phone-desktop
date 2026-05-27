@@ -1,7 +1,7 @@
 {
   "name": "eskew-phone-desktop",
-  "version": "1.0.6",
-  "description": "Eskew Phone \u2014 desktop wrapper for eskewphone.info",
+  "version": "1.0.7",
+  "description": "Eskew Phone — desktop wrapper for eskewphone.info",
   "main": "dist/main.js",
   "author": {
     "name": "SaveYa Tech",
@@ -34,7 +34,7 @@
   "build": {
     "appId": "com.saveyatech.eskewphone.desktop",
     "productName": "Eskew Phone",
-    "copyright": "Copyright \u00a9 2025 SaveYa Tech",
+    "copyright": "Copyright © 2025 SaveYa Tech",
     "directories": {
       "buildResources": "build",
       "output": "out"
