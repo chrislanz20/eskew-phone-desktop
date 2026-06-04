@@ -12,10 +12,24 @@ import * as path from "path";
 import { createTray, updateTrayMenu } from "./tray";
 import { initAutoUpdater } from "./updater";
 import {
+  disableGpuAndRelaunch,
+  isGpuDisabled,
   markCleanShutdown,
   reconcileStartup,
   relaunchWithCacheWipe,
 } from "./recovery";
+
+// Render via software compositing on Windows (and on any machine a prior
+// session pinned after repeated black screens). Office Windows PCs — older
+// Intel iGPUs, RDP / virtualized sessions, stale drivers — routinely fail to
+// composite Chromium's GPU output, leaving a pure-black window that survives
+// restarts and cache wipes and that the reactive watchdog can't reliably even
+// detect (capturePage is itself GPU-dependent). A phone dashboard gains nothing
+// from the GPU, so trading it for a bulletproof paint is the right call. Must
+// run before app.ready — this is the only point Electron honors it.
+if (process.platform === "win32" || isGpuDisabled()) {
+  app.disableHardwareAcceleration();
+}
 
 // Prevent the OS from throttling background renderers when the window is hidden.
 // Twilio Voice WebSocket / Notification timers must keep running in the tray.
@@ -185,6 +199,12 @@ function recover(win: BrowserWindow, reason: string): void {
   if (attempt === 2) {
     // Corrupted GPU/shader cache on disk: relaunch and wipe it on the way up.
     relaunchWithCacheWipe();
+    return; // process is restarting
+  }
+  if (attempt === 3 && !isGpuDisabled()) {
+    // Cache wipes didn't fix it — the GPU itself can't composite. Pin to
+    // software rendering and relaunch; the black screen can't survive that.
+    disableGpuAndRelaunch();
     return; // process is restarting
   }
   // Out of automatic options — hand the user the manual recovery page.
@@ -447,11 +467,18 @@ app.whenReady().then(() => {
   reconcileStartup();
 
   // A GPU process crash leaves the renderer alive but un-composited (black).
-  // Chromium respawns the GPU process; a reload re-paints. If it keeps
-  // happening the unclean-shutdown reconcile wipes the cache next boot.
+  // Chromium respawns the GPU process; a reload re-paints. A second crash in
+  // one session means the GPU path is genuinely broken on this machine, so we
+  // skip the reload ladder and pin to software rendering immediately.
+  let gpuCrashes = 0;
   app.on("child-process-gone", (_event, details) => {
     if (details.type !== "GPU") return;
-    console.error(`[main] GPU process gone: reason=${details.reason}`);
+    gpuCrashes++;
+    console.error(`[main] GPU process gone (#${gpuCrashes}): reason=${details.reason}`);
+    if (gpuCrashes >= 2 && !isGpuDisabled()) {
+      disableGpuAndRelaunch();
+      return; // process is restarting
+    }
     if (mainWindow && !mainWindow.isDestroyed() && !isShowingErrorPage) {
       recover(mainWindow, "Graphics process crashed");
     }

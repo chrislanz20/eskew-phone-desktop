@@ -23,6 +23,41 @@ function runningFlagPath(): string {
   return path.join(app.getPath("userData"), ".session-running");
 }
 
+// Sticky flag: a prior session gave up on hardware compositing after repeated
+// black screens that cache wipes couldn't fix, and dropped to software
+// rendering. Read at startup (before app.ready) to decide whether to call
+// app.disableHardwareAcceleration().
+function gpuDisabledFlagPath(): string {
+  return path.join(app.getPath("userData"), ".gpu-disabled");
+}
+
+// True if this machine has been pinned to software rendering. Safe to call
+// before app.ready — userData resolves without a ready app.
+export function isGpuDisabled(): boolean {
+  try {
+    return fs.existsSync(gpuDisabledFlagPath());
+  } catch {
+    return false;
+  }
+}
+
+// Last-ditch black-screen recovery: persist the software-rendering choice and
+// relaunch. Hardware acceleration can only be disabled before any window
+// exists, so we record the decision and let the next boot's startup read it and
+// call app.disableHardwareAcceleration(). Sticky on purpose — a GPU driver that
+// can't composite Chromium won't start working on its own, and for a receptionist
+// a black call queue is far worse than slightly higher CPU on a software path.
+export function disableGpuAndRelaunch(): void {
+  try {
+    fs.writeFileSync(gpuDisabledFlagPath(), new Date().toISOString());
+  } catch {
+    /* best effort — if we can't persist, the relaunch just retries with GPU */
+  }
+  console.warn("[recovery] pinning to software rendering after repeated black screens");
+  app.relaunch();
+  app.exit(0);
+}
+
 function rmDirSafe(dir: string): void {
   try {
     fs.rmSync(dir, { recursive: true, force: true });
