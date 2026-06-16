@@ -378,6 +378,11 @@ function createMainWindow(): BrowserWindow {
     updateTrayMenu(getMainWindow());
   });
 
+  // Stop any incoming-call taskbar flash the moment the user looks at the app.
+  win.on("focus", () => {
+    win.flashFrame(false);
+  });
+
   // Replace the black screen with a branded retry page on any non-aborted
   // load failure (network down, Vercel hiccup, eskewphone.info DNS issue).
   // The error page auto-retries every 8s and exposes a manual Retry button.
@@ -573,6 +578,49 @@ app.whenReady().then(() => {
       } else {
         mainWindow.setOverlayIcon(null, "");
       }
+    }
+  });
+
+  // Incoming call — surface the window so the ringing overlay is visible even
+  // when the app is minimized or hidden in the tray, flash the taskbar for
+  // attention, and pop a clickable desktop notification. The web renderer
+  // (use-twilio-device.ts) fires this on the Twilio Device 'incoming' event.
+  // The notification is silent because the web app plays its own ringtone
+  // (renderer audio keeps running in the tray) — we don't want two sounds.
+  ipcMain.on(
+    "eskew:incoming-call",
+    (_event, info: { from?: string; callerName?: string } = {}) => {
+      const win = mainWindow;
+      if (!win || win.isDestroyed()) return;
+
+      // Bring the window into view. On Windows the OS may decline to steal
+      // foreground focus from whatever the user is actively in — flashFrame +
+      // the notification below are the reliable attention signals in that case.
+      if (win.isMinimized()) win.restore();
+      if (!win.isVisible()) win.show();
+      win.focus();
+      win.flashFrame(true);
+
+      if (Notification.isSupported()) {
+        const who =
+          info.callerName?.trim() ||
+          (info.from && info.from !== "Unknown" ? info.from : "Unknown caller");
+        const notif = new Notification({
+          title: "Incoming call",
+          body: who,
+          silent: true,
+        });
+        notif.on("click", () => showWindow());
+        notif.show();
+      }
+    }
+  );
+
+  // Call answered / rejected / cancelled — stop the taskbar flash. (Windows
+  // also stops flashing on its own once the window gains focus.)
+  ipcMain.on("eskew:call-ended", () => {
+    if (mainWindow && !mainWindow.isDestroyed()) {
+      mainWindow.flashFrame(false);
     }
   });
 

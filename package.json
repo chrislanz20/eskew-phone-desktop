@@ -1,6 +1,6 @@
 {
   "name": "eskew-phone-desktop",
-  "version": "1.0.8",
+  "version": "1.0.9",
   "description": "Eskew Phone — desktop wrapper for eskewphone.info",
   "main": "dist/main.js",
   "author": {
