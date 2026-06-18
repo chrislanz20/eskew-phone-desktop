@@ -10,7 +10,7 @@ import {
 } from "electron";
 import * as path from "path";
 import { createTray, updateTrayMenu } from "./tray";
-import { initAutoUpdater } from "./updater";
+import { initAutoUpdater, installDownloadedUpdate } from "./updater";
 import {
   disableGpuAndRelaunch,
   isGpuDisabled,
@@ -465,6 +465,32 @@ export function quitApp(): void {
   app.quit();
 }
 
+// Apply a downloaded update NOW. Must enter quitting mode first — otherwise the
+// window 'close' handler (which hides to the tray) would swallow the quit and
+// the installer would never run. quitAndInstall then exits + installs + relaunch.
+function applyUpdate(): void {
+  isQuitting = true;
+  installDownloadedUpdate();
+}
+
+// Fired when an update finishes downloading: refresh the tray (surfaces the
+// "Restart to update" item) and pop a clickable notification so staff can apply
+// it in one click between calls — instead of waiting for a full quit a tray app
+// rarely gets. (The update still also installs on the next real quit.)
+function onUpdateReady(version: string): void {
+  updateTrayMenu(getMainWindow());
+  try {
+    const n = new Notification({
+      title: "Eskew Phone update ready",
+      body: `Version ${version} — click to restart and apply now (fixes black-screen issues).`,
+    });
+    n.on("click", applyUpdate);
+    n.show();
+  } catch {
+    /* notifications may not be granted yet — the tray item still surfaces it */
+  }
+}
+
 app.whenReady().then(() => {
   // If the previous session ended uncleanly (a crash or a black-screen
   // recovery relaunch), wipe the GPU/shader caches now — before any window
@@ -519,12 +545,15 @@ app.whenReady().then(() => {
       // Same path as the error page's Reset & Reload button.
       ipcMain.emit("eskew:reset-reload");
     },
+    onInstallUpdate: applyUpdate,
     getWindow: getMainWindow,
   });
 
   // Wire silent autoupdater (GitHub Releases). First check fires 10s after
   // launch so it doesn't compete with login + Twilio Voice on cold start.
-  initAutoUpdater();
+  // On download, surface a one-click apply (tray + notification) so the fix
+  // actually lands without needing a full quit.
+  initAutoUpdater({ onUpdateDownloaded: onUpdateReady });
 
   // Retry button on connection-error.html fires this. Re-attempts the remote
   // load; if it fails again, did-fail-load swaps back to the error page.

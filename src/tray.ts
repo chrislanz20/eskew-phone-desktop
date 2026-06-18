@@ -1,5 +1,6 @@
 import { app, BrowserWindow, Menu, nativeImage, Tray } from "electron";
 import * as path from "path";
+import { isUpdatePending, getPendingVersion } from "./updater";
 
 interface TrayHandlers {
   onShow: () => void;
@@ -7,6 +8,7 @@ interface TrayHandlers {
   onQuit: () => void;
   onReload: () => void;
   onReset: () => void;
+  onInstallUpdate: () => void;
   getWindow: () => BrowserWindow | null;
 }
 
@@ -51,7 +53,19 @@ export function createTray(h: TrayHandlers): Tray {
 export function updateTrayMenu(win: BrowserWindow | null): void {
   if (!tray || !handlers) return;
   const visible = !!win && !win.isDestroyed() && win.isVisible();
-  const menu = Menu.buildFromTemplate([
+  const items: Electron.MenuItemConstructorOptions[] = [];
+  // A downloaded update waiting to install — give it a prominent one-click apply
+  // at the very top, since a tray app rarely gets a true quit on its own.
+  if (isUpdatePending()) {
+    items.push(
+      {
+        label: `🔄  Restart to update (v${getPendingVersion()})`,
+        click: () => handlers!.onInstallUpdate(),
+      },
+      { type: "separator" },
+    );
+  }
+  items.push(
     {
       label: visible ? "Hide Eskew Phone" : "Show Eskew Phone",
       click: () => (visible ? handlers!.onHide() : handlers!.onShow()),
@@ -74,7 +88,8 @@ export function updateTrayMenu(win: BrowserWindow | null): void {
       label: "Quit Eskew Phone",
       click: () => handlers!.onQuit(),
     },
-  ]);
+  );
+  const menu = Menu.buildFromTemplate(items);
   tray.setContextMenu(menu);
 }
 

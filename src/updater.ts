@@ -12,13 +12,20 @@
 // No user interaction required other than eventually relaunching.
 
 import { autoUpdater } from "electron-updater";
-import { Notification, app } from "electron";
+import { app } from "electron";
 
 const CHECK_INTERVAL_MS = 4 * 60 * 60 * 1000; // 4 hours
 
 let firstCheckScheduled = false;
+// A downloaded-but-not-yet-installed update. This app lives in the tray and is
+// rarely truly quit (closing the window just hides it), so autoInstallOnAppQuit
+// alone left staff stuck on old builds for weeks — the recurring Windows
+// black-screen reports traced back to this (the fix shipped in v1.0.8/1.0.9 but
+// never installed). We now surface a one-click "Restart to update" (tray item +
+// clickable notification) so a fix actually lands without needing a full quit.
+let pendingVersion: string | null = null;
 
-export function initAutoUpdater(): void {
+export function initAutoUpdater(opts: { onUpdateDownloaded?: (version: string) => void } = {}): void {
   // Don't run in dev — autoUpdater requires a packaged app.
   if (!app.isPackaged) {
     console.log("[updater] skipping autoupdater in dev mode");
@@ -48,11 +55,11 @@ export function initAutoUpdater(): void {
 
   autoUpdater.on("update-downloaded", (info) => {
     console.log(`[updater] update downloaded: ${info.version}`);
-    new Notification({
-      title: "Eskew Phone updated",
-      body: `Version ${info.version} ready — it will install when you next quit and relaunch.`,
-      silent: true,
-    }).show();
+    pendingVersion = info.version;
+    // Hand off to the app to surface a one-click apply (notification + tray
+    // item). The update ALSO still installs automatically on the next real quit
+    // (autoInstallOnAppQuit stays true), so this only adds faster paths.
+    opts.onUpdateDownloaded?.(info.version);
   });
 
   autoUpdater.on("error", (err) => {
@@ -69,5 +76,25 @@ export function initAutoUpdater(): void {
     setInterval(() => {
       autoUpdater.checkForUpdates().catch((e) => console.error("[updater] check failed:", e));
     }, CHECK_INTERVAL_MS);
+  }
+}
+
+export function isUpdatePending(): boolean {
+  return pendingVersion !== null;
+}
+
+export function getPendingVersion(): string | null {
+  return pendingVersion;
+}
+
+// Quit + install the downloaded update, then relaunch. The CALLER must first put
+// the app into quitting mode (set main's isQuitting flag) — otherwise the
+// window's close handler hides to the tray instead of letting the app exit, and
+// the install never runs.
+export function installDownloadedUpdate(): void {
+  try {
+    autoUpdater.quitAndInstall(false, true); // isSilent=false, isForceRunAfter=true
+  } catch (e) {
+    console.error("[updater] quitAndInstall failed:", e);
   }
 }
