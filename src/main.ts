@@ -1,6 +1,7 @@
 import {
   app,
   BrowserWindow,
+  dialog,
   ipcMain,
   nativeImage,
   Notification,
@@ -478,17 +479,30 @@ function applyUpdate(): void {
 // it in one click between calls — instead of waiting for a full quit a tray app
 // rarely gets. (The update still also installs on the next real quit.)
 function onUpdateReady(version: string): void {
+  // Surface the persistent "Restart to update" tray item first…
   updateTrayMenu(getMainWindow());
-  try {
-    const n = new Notification({
-      title: "Eskew Phone update ready",
-      body: `Version ${version} — click to restart and apply now (fixes black-screen issues).`,
+  // …then pop an UNMISSABLE one-click dialog. Staff should never need to hunt
+  // for the system tray to apply a fix. Standalone (no parent window) so it shows
+  // even when the app is hidden in the tray. Non-blocking; "Later" defers and the
+  // update still installs on the next quit/restart. Only fires once per download.
+  dialog
+    .showMessageBox({
+      type: "info",
+      title: "Eskew Phone — Update Ready",
+      message: "A quick update is ready to install.",
+      detail:
+        "Restart now to apply it (fixes the black-screen issue). It only takes a few seconds and you stay logged in.",
+      buttons: ["Restart Now", "Later"],
+      defaultId: 0,
+      cancelId: 1,
+      noLink: true,
+    })
+    .then(({ response }) => {
+      if (response === 0) applyUpdate();
+    })
+    .catch(() => {
+      /* dialog failed — the tray "Restart to update" item still offers it */
     });
-    n.on("click", applyUpdate);
-    n.show();
-  } catch {
-    /* notifications may not be granted yet — the tray item still surfaces it */
-  }
 }
 
 app.whenReady().then(() => {
@@ -551,8 +565,8 @@ app.whenReady().then(() => {
 
   // Wire silent autoupdater (GitHub Releases). First check fires 10s after
   // launch so it doesn't compete with login + Twilio Voice on cold start.
-  // On download, surface a one-click apply (tray + notification) so the fix
-  // actually lands without needing a full quit.
+  // On download, surface a one-click apply (Restart-now dialog + tray item) so
+  // the fix actually lands without needing a full quit or finding the tray.
   initAutoUpdater({ onUpdateDownloaded: onUpdateReady });
 
   // Retry button on connection-error.html fires this. Re-attempts the remote
