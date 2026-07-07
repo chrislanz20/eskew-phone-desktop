@@ -74,8 +74,34 @@ function loadConnectionError(
   });
 }
 
+// If a load hangs — neither did-finish-load nor did-fail-load ever fires
+// (e.g. a stalled backend response) — the black-screen watchdog never arms,
+// since it only schedules from did-finish-load. This is a hard backstop: if
+// the app URL hasn't finished loading within this window, treat it the same
+// as a confirmed black screen and run the same graduated recovery.
+const LOAD_HANG_TIMEOUT_MS = 20000;
+let loadHangTimer: NodeJS.Timeout | null = null;
+
+function clearLoadHangTimer(): void {
+  if (loadHangTimer) {
+    clearTimeout(loadHangTimer);
+    loadHangTimer = null;
+  }
+}
+
+function armLoadHangTimer(win: BrowserWindow): void {
+  clearLoadHangTimer();
+  loadHangTimer = setTimeout(() => {
+    loadHangTimer = null;
+    if (isShowingErrorPage || win.isDestroyed()) return;
+    console.warn("[main] load hang: neither did-finish-load nor did-fail-load fired in time");
+    recover(win, "Load timed out");
+  }, LOAD_HANG_TIMEOUT_MS);
+}
+
 function loadAppUrl(win: BrowserWindow): void {
   isShowingErrorPage = false;
+  armLoadHangTimer(win);
   win.loadURL(APP_URL).catch(() => {
     // The did-fail-load handler is the canonical recovery path. swallow here.
   });
@@ -178,7 +204,10 @@ function recover(win: BrowserWindow, reason: string): void {
   console.warn(`[main] recover attempt ${attempt}: ${reason}`);
 
   if (attempt === 0) {
-    // Transient: force a fresh fetch + re-render.
+    // Transient: force a fresh fetch + re-render. Re-arm the hang backstop in
+    // case this reload itself never finishes (isShowingErrorPage is already
+    // false here, since we only reach recover() while the real app is loaded).
+    armLoadHangTimer(win);
     win.webContents.reloadIgnoringCache();
     recovering = false;
     return;
@@ -332,6 +361,7 @@ function createMainWindow(): BrowserWindow {
   `;
   win.webContents.on("did-finish-load", () => {
     console.log(`[main] did-finish-load: ${win.webContents.getURL()}`);
+    clearLoadHangTimer();
     win.webContents.insertCSS(DRAG_CSS).catch(() => undefined);
     // Confirm the page actually painted real content (catches the black-screen
     // case that loads "successfully" but renders blank).
@@ -394,6 +424,7 @@ function createMainWindow(): BrowserWindow {
       if (errorCode === -3) return;
       // Sub-frame failures (iframes etc.) shouldn't replace the whole window.
       if (!isMainFrame) return;
+      clearLoadHangTimer();
       // If we're already showing the error page and it failed to load, bail —
       // otherwise we'd loop. The page is a local file, so this is rare.
       if (isShowingErrorPage) return;
@@ -699,8 +730,16 @@ app.whenReady().then(() => {
 
 app.on("before-quit", () => {
   isQuitting = true;
-  // A clean quit (tray Quit / Cmd+Q / OS shutdown) clears the running-flag so
-  // the next launch knows it doesn't need to wipe the cache.
+  // A clean quit (tray Quit / Cmd+Q / OS shutdown) normally clears the
+  // running-flag so the next launch skips the cache wipe. But if recovery was
+  // ever triggered this session and never confirmed healthy again
+  // (recoveryAttempt > 0), the on-disk GPU/shader cache may still be the
+  // culprit — leave the flag in place so the next launch wipes it regardless
+  // of how clean this particular exit was.
+  if (recoveryAttempt > 0) {
+    console.warn("[main] quitting with recovery unresolved — next launch will wipe caches");
+    return;
+  }
   markCleanShutdown();
 });
 
