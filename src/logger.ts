@@ -80,7 +80,10 @@ function write(level: LogLevel, msg: string): void {
     rotateIfNeeded(file);
     fs.appendFileSync(file, `${line}\n`);
   } catch {
-    /* best effort — a failed append must never take the shell down */
+    // Best effort — a failed append must never take the shell down. Drop the
+    // cached path so the next write re-resolves and re-mkdirs (covers a logs/
+    // dir deleted mid-session; otherwise we'd ENOENT silently until restart).
+    logFilePath = null;
   }
 }
 

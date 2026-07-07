@@ -680,6 +680,13 @@ app.whenReady().then(() => {
     if (isCallActive()) {
       log.warn("[main] GPU crash during an active call — deferring recovery until it ends");
       suppressedDuringCall = true;
+      // Self-poll like the black-screen deferral: even if the explicit
+      // call-ended signal is lost, the health check re-evaluates the paint
+      // once the TTL opens the gate, so a deferred GPU recovery can't sit
+      // forever waiting on a message that never arrives.
+      if (mainWindow && !mainWindow.isDestroyed()) {
+        scheduleHealthCheck(mainWindow, HEALTH_RECHECK_DURING_CALL_MS);
+      }
       return;
     }
     if (gpuCrashes >= 2 && !isGpuDisabled()) {
@@ -865,6 +872,12 @@ app.whenReady().then(() => {
     if (isCallActive()) {
       log.warn("[main] system resumed during an active call — skipping wake reload");
       suppressedDuringCall = true;
+      // Same self-poll as the GPU deferral: re-check the paint after the
+      // in-call recheck window so a lost call-ended signal can't leave a
+      // wedged (e.g. black) window behind with nothing re-evaluating it.
+      if (mainWindow && !mainWindow.isDestroyed()) {
+        scheduleHealthCheck(mainWindow, HEALTH_RECHECK_DURING_CALL_MS);
+      }
       return;
     }
     log.info("[main] system resumed — reloading window");
