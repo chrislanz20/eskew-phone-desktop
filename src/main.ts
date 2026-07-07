@@ -19,6 +19,7 @@ import {
   reconcileStartup,
   relaunchWithCacheWipe,
 } from "./recovery";
+import { log } from "./logger";
 
 // Render via software compositing on Windows (and on any machine a prior
 // session pinned after repeated black screens). Office Windows PCs — older
@@ -46,6 +47,17 @@ app.commandLine.appendSwitch("disable-backgrounding-occluded-windows");
 app.commandLine.appendSwitch("enable-features", "WebRTC");
 
 const APP_URL = "https://eskewphone.info";
+
+// URLs are only ever logged host+path — query strings can carry tokens or
+// call/caller identifiers and must never land in a log file on disk.
+function stripQuery(rawUrl: string): string {
+  try {
+    const u = new URL(rawUrl);
+    return `${u.origin}${u.pathname}`;
+  } catch {
+    return "<unparseable-url>";
+  }
+}
 const ERROR_PAGE = path.join(__dirname, "..", "assets", "connection-error.html");
 const SINGLE_INSTANCE = app.requestSingleInstanceLock();
 
@@ -55,6 +67,36 @@ let isQuitting = false;
 // successful did-finish-load is a recovery and don't treat a benign in-app
 // navigation as one.
 let isShowingErrorPage = false;
+
+// ---------------------------------------------------------------------------
+// Call-active signal (renderer -> main)
+//
+// The recovery ladder below was built call-unaware: a wake reload, a
+// black-screen reload or an unresponsive-triggered recover() tears down the
+// renderer — and with it any live Twilio call. The web app now tells us when
+// a call is ringing/connected (eskew:call-active true, re-sent every ~30s as
+// a heartbeat) and when it's over (false), so the SOFT triggers can defer
+// instead of killing a call a staffer is on.
+//
+// The TTL is the safety net for every way the "false" can get lost: renderer
+// reloads mid-call, an unresponsive renderer stops heartbeating, an old web
+// deploy that never sends the signal at all. If the flag hasn't been
+// refreshed within the TTL we treat the call as over and recover normally —
+// so the worst case is a bounded delay, never a permanently wedged watchdog.
+// A shell running against a web build without the signal never sets the flag
+// and behaves exactly as before.
+// ---------------------------------------------------------------------------
+const CALL_ACTIVE_TTL_MS = 90000; // 3 missed heartbeats == call presumed dead
+let callActiveFlag = false;
+let callActiveAt = 0;
+// Set whenever a recovery action was suppressed/deferred because of a live
+// call — the call-ended transition uses it to re-run the health check so a
+// genuinely broken window still gets fixed right after the call.
+let suppressedDuringCall = false;
+
+function isCallActive(): boolean {
+  return callActiveFlag && Date.now() - callActiveAt < CALL_ACTIVE_TTL_MS;
+}
 
 function loadConnectionError(
   win: BrowserWindow,
@@ -70,7 +112,7 @@ function loadConnectionError(
   win.loadURL(fileUrl).catch(() => {
     // If we can't even load the local error file, the install is broken;
     // there's nothing useful left to do from this process.
-    console.error("[main] failed to load connection-error.html");
+    log.error("[main] failed to load connection-error.html");
   });
 }
 
@@ -94,7 +136,7 @@ function armLoadHangTimer(win: BrowserWindow): void {
   loadHangTimer = setTimeout(() => {
     loadHangTimer = null;
     if (isShowingErrorPage || win.isDestroyed()) return;
-    console.warn("[main] load hang: neither did-finish-load nor did-fail-load fired in time");
+    log.warn("[main] load hang: neither did-finish-load nor did-fail-load fired in time");
     recover(win, "Load timed out");
   }, LOAD_HANG_TIMEOUT_MS);
 }
@@ -166,9 +208,15 @@ function clearHealthCheck(): void {
   }
 }
 
+// While a call is live a confirmed-black screen is only deferred, not acted
+// on — re-check on this cadence so recovery starts promptly once the call
+// ends (or the TTL expires).
+const HEALTH_RECHECK_DURING_CALL_MS = 30000;
+
 // (Re)arm the post-load health check. Called from did-finish-load, so it covers
-// the cold start and every reload/recovery.
-function scheduleHealthCheck(win: BrowserWindow): void {
+// the cold start and every reload/recovery — and re-armed with a shorter delay
+// when a black screen is confirmed but deferred behind a live call.
+function scheduleHealthCheck(win: BrowserWindow, delayMs = HEALTH_CHECK_DELAY_MS): void {
   clearHealthCheck();
   healthCheckTimer = setTimeout(async () => {
     healthCheckTimer = null;
@@ -177,7 +225,7 @@ function scheduleHealthCheck(win: BrowserWindow): void {
     if (!win.webContents.getURL().startsWith(APP_URL)) return;
 
     if (!(await looksBlack(win))) {
-      console.log("[main] health check: render OK");
+      log.info("[main] health check: render OK");
       recoveryAttempt = 0; // confirmed healthy paint — reset the ladder
       return;
     }
@@ -185,13 +233,26 @@ function scheduleHealthCheck(win: BrowserWindow): void {
     await new Promise((res) => setTimeout(res, BLACK_CONFIRM_DELAY_MS));
     if (recovering || isShowingErrorPage || win.isDestroyed()) return;
     if (await looksBlack(win)) {
-      console.warn("[main] health check: black/blank render confirmed");
+      // The screen looks dead — but the audio path may well be alive, and a
+      // reload is guaranteed to kill any call in progress. capturePage is a
+      // heuristic (and GPU-dependent itself), so while a call is live we only
+      // defer and keep re-checking; the call-ended transition and the TTL
+      // both bound how long recovery can be held off.
+      if (isCallActive()) {
+        log.warn(
+          "[main] health check: black/blank render confirmed but a call is active — deferring recovery"
+        );
+        suppressedDuringCall = true;
+        scheduleHealthCheck(win, HEALTH_RECHECK_DURING_CALL_MS);
+        return;
+      }
+      log.warn("[main] health check: black/blank render confirmed");
       recover(win, "Black screen detected");
     } else {
-      console.log("[main] health check: render OK (recovered from transient)");
+      log.info("[main] health check: render OK (recovered from transient)");
       recoveryAttempt = 0;
     }
-  }, HEALTH_CHECK_DELAY_MS);
+  }, delayMs);
 }
 
 // Graduated recovery: cheapest fix first, hardest last. The attempt counter
@@ -201,7 +262,7 @@ function recover(win: BrowserWindow, reason: string): void {
   recovering = true;
   clearHealthCheck();
   const attempt = recoveryAttempt++;
-  console.warn(`[main] recover attempt ${attempt}: ${reason}`);
+  log.warn(`[main] recover attempt ${attempt}: ${reason} (callActive=${isCallActive()})`);
 
   if (attempt === 0) {
     // Transient: force a fresh fetch + re-render. Re-arm the hang backstop in
@@ -360,7 +421,7 @@ function createMainWindow(): BrowserWindow {
     }
   `;
   win.webContents.on("did-finish-load", () => {
-    console.log(`[main] did-finish-load: ${win.webContents.getURL()}`);
+    log.info(`[main] did-finish-load: ${stripQuery(win.webContents.getURL())}`);
     clearLoadHangTimer();
     win.webContents.insertCSS(DRAG_CSS).catch(() => undefined);
     // Confirm the page actually painted real content (catches the black-screen
@@ -435,8 +496,8 @@ function createMainWindow(): BrowserWindow {
         if (u.hostname !== "eskewphone.info") return;
       } catch { /* malformed URL -> still safe to recover via error page */ }
 
-      console.error(
-        `[main] did-fail-load ${errorCode} ${errorDescription} ${validatedURL}`
+      log.error(
+        `[main] did-fail-load ${errorCode} ${errorDescription} ${stripQuery(validatedURL)}`
       );
       loadConnectionError(win, {
         code: errorCode,
@@ -456,17 +517,65 @@ function createMainWindow(): BrowserWindow {
 
   // Renderer process died (out-of-memory, segfault, GPU crash). Run the
   // graduated recovery (reload first) instead of jumping straight to the
-  // error page.
+  // error page. NEVER deferred for a live call: the renderer owns the Twilio
+  // connection, so if it's gone the call is already gone — waiting would just
+  // leave the staffer staring at a dead window.
   win.webContents.on("render-process-gone", (_event, details) => {
-    console.error(`[main] render-process-gone: reason=${details.reason}`);
+    log.error(
+      `[main] render-process-gone: reason=${details.reason} callActive=${isCallActive()}`
+    );
+    // The flag was set by a renderer that no longer exists — clear it so a
+    // stale "call active" can't suppress the recovery reload (or anything
+    // else) for up to a TTL after the crash.
+    callActiveFlag = false;
+    clearUnresponsiveDeferral();
     if (details.reason === "clean-exit") return;
     recover(win, `App crashed (${details.reason})`);
   });
 
-  // Renderer stopped responding for >30s — usually a JS deadlock. Auto-recover.
+  // Renderer stopped responding for >30s — usually a JS deadlock. Electron
+  // fires `responsive` if it works itself out, so this trigger is SPECULATIVE:
+  // a renderer that's merely busy may come back on its own. Recovering here
+  // reloads the page — fatal to a live call — so while a call is active we
+  // defer for a grace window instead of firing immediately. If the renderer
+  // is still stuck after the deferral it can't be servicing the call anyway,
+  // so we recover regardless (and note the renderer being hung also stops the
+  // call-active heartbeats, so the TTL opens the gate on its own too).
+  const UNRESPONSIVE_DEFER_MS = 60000;
+  let unresponsiveDeferral: NodeJS.Timeout | null = null;
+  function clearUnresponsiveDeferral(): void {
+    if (unresponsiveDeferral) {
+      clearTimeout(unresponsiveDeferral);
+      unresponsiveDeferral = null;
+    }
+  }
   win.webContents.on("unresponsive", () => {
-    console.warn("[main] webContents went unresponsive");
+    if (isCallActive()) {
+      log.warn(
+        "[main] webContents went unresponsive during an active call — deferring recovery 60s"
+      );
+      suppressedDuringCall = true;
+      clearUnresponsiveDeferral();
+      unresponsiveDeferral = setTimeout(() => {
+        unresponsiveDeferral = null;
+        if (win.isDestroyed()) return;
+        log.warn("[main] still unresponsive after deferral — recovering anyway");
+        recover(win, "App stopped responding");
+      }, UNRESPONSIVE_DEFER_MS);
+      return;
+    }
+    log.warn("[main] webContents went unresponsive");
     recover(win, "App stopped responding");
+  });
+
+  // The renderer came back on its own — stand down any deferred recovery so a
+  // transient stall (big transcript render, GC pause) doesn't get "fixed" with
+  // a reload a minute after it resolved itself.
+  win.webContents.on("responsive", () => {
+    if (unresponsiveDeferral) {
+      clearUnresponsiveDeferral();
+      log.info("[main] webContents responsive again — cancelled deferred recovery");
+    }
   });
 
   return win;
@@ -501,6 +610,7 @@ export function quitApp(): void {
 // window 'close' handler (which hides to the tray) would swallow the quit and
 // the installer would never run. quitAndInstall then exits + installs + relaunch.
 function applyUpdate(): void {
+  log.info("[main] applying downloaded update");
   isQuitting = true;
   installDownloadedUpdate();
 }
@@ -510,6 +620,7 @@ function applyUpdate(): void {
 // it in one click between calls — instead of waiting for a full quit a tray app
 // rarely gets. (The update still also installs on the next real quit.)
 function onUpdateReady(version: string): void {
+  log.info(`[main] update downloaded: v${version}`);
   // Surface the persistent "Restart to update" tray item first…
   updateTrayMenu(getMainWindow());
   // …then pop an UNMISSABLE one-click dialog. Staff should never need to hunt
@@ -537,6 +648,12 @@ function onUpdateReady(version: string): void {
 }
 
 app.whenReady().then(() => {
+  // First line of every session — pins version/platform/render-path so the
+  // log file reads standalone when pulled off a staffer's machine.
+  log.info(
+    `[main] app start: v${app.getVersion()} platform=${process.platform} gpuDisabled=${isGpuDisabled()}`
+  );
+
   // If the previous session ended uncleanly (a crash or a black-screen
   // recovery relaunch), wipe the GPU/shader caches now — before any window
   // touches them — to clear the on-disk corruption that survives restarts.
@@ -546,11 +663,32 @@ app.whenReady().then(() => {
   // Chromium respawns the GPU process; a reload re-paints. A second crash in
   // one session means the GPU path is genuinely broken on this machine, so we
   // skip the reload ladder and pin to software rendering immediately.
+  //
+  // Both responses are VISUAL fixes for a failure the audio path usually
+  // survives (WebRTC audio doesn't need the compositor), so during a live
+  // call we defer them — reload and relaunch alike would drop the call to fix
+  // pixels the staffer may not even be looking at. The crash counter still
+  // increments while deferred, and the call-ended health check (plus the TTL)
+  // picks recovery back up once it can't take a call down with it.
   let gpuCrashes = 0;
   app.on("child-process-gone", (_event, details) => {
     if (details.type !== "GPU") return;
     gpuCrashes++;
-    console.error(`[main] GPU process gone (#${gpuCrashes}): reason=${details.reason}`);
+    log.error(
+      `[main] GPU process gone (#${gpuCrashes}): reason=${details.reason} callActive=${isCallActive()}`
+    );
+    if (isCallActive()) {
+      log.warn("[main] GPU crash during an active call — deferring recovery until it ends");
+      suppressedDuringCall = true;
+      // Self-poll like the black-screen deferral: even if the explicit
+      // call-ended signal is lost, the health check re-evaluates the paint
+      // once the TTL opens the gate, so a deferred GPU recovery can't sit
+      // forever waiting on a message that never arrives.
+      if (mainWindow && !mainWindow.isDestroyed()) {
+        scheduleHealthCheck(mainWindow, HEALTH_RECHECK_DURING_CALL_MS);
+      }
+      return;
+    }
     if (gpuCrashes >= 2 && !isGpuDisabled()) {
       disableGpuAndRelaunch();
       return; // process is restarting
@@ -698,17 +836,58 @@ app.whenReady().then(() => {
     }
   });
 
+  // Call-active signal from the renderer (see the state block up top). The
+  // payload crosses the contextBridge untyped, so validate it: only a literal
+  // true engages the gate — anything else reads as "no call", which fails
+  // toward today's recover-freely behavior rather than toward a wedged
+  // watchdog. Heartbeats (true while already true) just refresh the TTL
+  // timestamp; only real transitions are logged (booleans only — never any
+  // call/caller detail).
+  ipcMain.on("eskew:call-active", (_event, active: unknown) => {
+    const next = active === true;
+    const wasActive = callActiveFlag;
+    callActiveFlag = next;
+    if (next) callActiveAt = Date.now();
+    if (wasActive === next) return;
+    log.info(`[main] call-active: ${next}`);
+    // Call just ended: if any soft recovery was held back while it was live,
+    // re-run the health check now so a genuinely broken window gets fixed
+    // seconds after hangup instead of waiting for the next scheduled pass.
+    if (!next && suppressedDuringCall) {
+      suppressedDuringCall = false;
+      log.info("[main] call ended with deferred recovery pending — re-checking health");
+      if (mainWindow && !mainWindow.isDestroyed()) {
+        scheduleHealthCheck(mainWindow);
+      }
+    }
+  });
+
   // Reload the web app on wake — Twilio Voice WebSocket usually drops during
-  // sleep and the Next.js app's auto-reconnect is unreliable.
+  // sleep and the Next.js app's auto-reconnect is unreliable. But the reload
+  // is UNCONDITIONAL and wake events also fire on lid jiggles / display sleep
+  // where nothing actually dropped — if a call survived the event, reloading
+  // here is what kills it. Skip while a call is live; the post-call health
+  // check re-evaluates the window once it's safe.
   powerMonitor.on("resume", () => {
-    console.log("[main] system resumed — reloading window");
+    if (isCallActive()) {
+      log.warn("[main] system resumed during an active call — skipping wake reload");
+      suppressedDuringCall = true;
+      // Same self-poll as the GPU deferral: re-check the paint after the
+      // in-call recheck window so a lost call-ended signal can't leave a
+      // wedged (e.g. black) window behind with nothing re-evaluating it.
+      if (mainWindow && !mainWindow.isDestroyed()) {
+        scheduleHealthCheck(mainWindow, HEALTH_RECHECK_DURING_CALL_MS);
+      }
+      return;
+    }
+    log.info("[main] system resumed — reloading window");
     if (mainWindow && !mainWindow.isDestroyed()) {
       mainWindow.webContents.reloadIgnoringCache();
     }
   });
 
   powerMonitor.on("unlock-screen", () => {
-    console.log("[main] screen unlocked");
+    log.info("[main] screen unlocked");
     if (mainWindow && !mainWindow.isDestroyed() && !mainWindow.isVisible()) {
       // Don't auto-show, but make sure the page is fresh for the next call.
       mainWindow.webContents
@@ -737,9 +916,10 @@ app.on("before-quit", () => {
   // culprit — leave the flag in place so the next launch wipes it regardless
   // of how clean this particular exit was.
   if (recoveryAttempt > 0) {
-    console.warn("[main] quitting with recovery unresolved — next launch will wipe caches");
+    log.warn("[main] quitting with recovery unresolved — next launch will wipe caches");
     return;
   }
+  log.info("[main] clean shutdown");
   markCleanShutdown();
 });
 
