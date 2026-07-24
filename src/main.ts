@@ -377,7 +377,7 @@ function createMainWindow(): BrowserWindow {
 
   // Set a desktop user-agent suffix so the Next.js app can detect the
   // wrapper if it ever needs to (e.g. to hide the iOS-app banner).
-  const ua = win.webContents.getUserAgent() + " EskewPhoneDesktop/1.0.0";
+  const ua = win.webContents.getUserAgent() + ` EskewPhoneDesktop/${app.getVersion()}`;
   win.webContents.setUserAgent(ua);
 
   loadAppUrl(win);
