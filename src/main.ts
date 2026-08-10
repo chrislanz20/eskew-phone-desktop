@@ -20,6 +20,7 @@ import {
   relaunchWithCacheWipe,
 } from "./recovery";
 import { log } from "./logger";
+import { attachContextMenu, installApplicationMenu } from "./edit-menu";
 
 // Render via software compositing on Windows (and on any machine a prior
 // session pinned after repeated black screens). Office Windows PCs — older
@@ -578,6 +579,11 @@ function createMainWindow(): BrowserWindow {
     }
   });
 
+  // Right-click Cut/Copy/Paste. Electron ships no default context menu, so
+  // without this a right-click in any text field does nothing at all — which
+  // is how staff ended up unable to paste a password into the login form.
+  attachContextMenu(win);
+
   return win;
 }
 
@@ -653,6 +659,11 @@ app.whenReady().then(() => {
   log.info(
     `[main] app start: v${app.getVersion()} platform=${process.platform} gpuDisabled=${isGpuDisabled()}`
   );
+
+  // Pin the standard edit roles (and therefore the Ctrl/Cmd+V accelerators)
+  // rather than trusting Electron's default menu to be there. The menu bar
+  // stays hidden via `autoHideMenuBar`, so nothing changes visually.
+  installApplicationMenu(app.getName());
 
   // If the previous session ended uncleanly (a crash or a black-screen
   // recovery relaunch), wipe the GPU/shader caches now — before any window
