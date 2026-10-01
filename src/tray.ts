@@ -71,6 +71,12 @@ export function setTrayUnread(count: number): void {
   const n = Math.max(0, Math.floor(Number(count) || 0));
   if (n === unreadCount) return;
   unreadCount = n;
+  applyTrayUnread();
+}
+
+// Separate so createTray can apply a count that arrived before the tray existed.
+function applyTrayUnread(): void {
+  const n = unreadCount;
   if (!tray || tray.isDestroyed()) return;
   tray.setToolTip(n > 0 ? `Eskew Phone — ${n} unread` : "Eskew Phone");
   if (process.platform !== "win32") return;
@@ -85,6 +91,7 @@ export function createTray(h: TrayHandlers): Tray {
   normalIcon = icon;
   tray = new Tray(icon);
   tray.setToolTip("Eskew Phone");
+  applyTrayUnread();
   tray.on("click", () => toggleWindow());
   tray.on("right-click", () => tray?.popUpContextMenu());
   updateTrayMenu(h.getWindow());
