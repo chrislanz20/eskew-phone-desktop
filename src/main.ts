@@ -21,6 +21,13 @@ import {
 } from "./recovery";
 import { log } from "./logger";
 import { attachContextMenu, installApplicationMenu } from "./edit-menu";
+import {
+  DIAL_SCHEME,
+  dialLinkFromArgv,
+  dialPageUrl,
+  parseDialLink,
+  type DialRequest,
+} from "./dial-link";
 
 // Render via software compositing on Windows (and on any machine a prior
 // session pinned after repeated black screens). Office Windows PCs — older
@@ -142,10 +149,12 @@ function armLoadHangTimer(win: BrowserWindow): void {
   }, LOAD_HANG_TIMEOUT_MS);
 }
 
-function loadAppUrl(win: BrowserWindow): void {
+// `url` is APP_URL or a page built FROM it (dialPageUrl) — never an address
+// taken from outside the app.
+function loadAppUrl(win: BrowserWindow, url: string = APP_URL): void {
   isShowingErrorPage = false;
   armLoadHangTimer(win);
-  win.loadURL(APP_URL).catch(() => {
+  win.loadURL(url).catch(() => {
     // The did-fail-load handler is the canonical recovery path. swallow here.
   });
 }
@@ -304,15 +313,75 @@ function recover(win: BrowserWindow, reason: string): void {
   recovering = false;
 }
 
+// ---------------------------------------------------------------------------
+// eskewphone://dial links (Call buttons in the Eskew OS case app, Nov 2026)
+//
+// The OS hands the link to us: macOS via "open-url" (also on a cold launch,
+// BEFORE the app is ready — so it is queued), Windows on the command line
+// (first launch: process.argv; app already running: the second instance's
+// argv arrives in "second-instance"). A valid link brings the window to the
+// front on <APP_URL>/calls?dial=…&name=…, where the web app shows its usual
+// "Call …?" confirm. Nothing is ever dialled without that confirm. Anything
+// that is not a valid dial link is ignored (see dial-link.ts).
+// ---------------------------------------------------------------------------
+let appReady = false;
+let pendingDial: DialRequest | null = null;
+
+function handleDialLink(raw: string, source: string): void {
+  const req = parseDialLink(raw);
+  // Never log the number or the name — only that a link came in.
+  if (!req) {
+    log.warn(`[main] ignored an ${DIAL_SCHEME}: link that is not a valid dial link (${source})`);
+    return;
+  }
+  log.info(`[main] dial link received (${source})`);
+  if (!appReady) {
+    pendingDial = req; // the window is created with it once the app is ready
+    return;
+  }
+  openDial(req);
+}
+
+function openDial(req: DialRequest): void {
+  const url = dialPageUrl(APP_URL, req);
+  if (!mainWindow || mainWindow.isDestroyed()) {
+    mainWindow = createMainWindow(url);
+    return;
+  }
+  const win = mainWindow;
+  if (win.isMinimized()) win.restore();
+  win.show();
+  win.focus();
+  if (process.platform === "darwin") app.focus({ steal: true });
+  // A live call: the web app's beforeunload guard fires and the
+  // will-prevent-unload handler asks first (default = stay on the call).
+  loadAppUrl(win, url);
+}
+
+// macOS: must be registered before "ready" to catch the link that launched us.
+app.on("open-url", (event, url) => {
+  event.preventDefault();
+  handleDialLink(url, "open-url");
+});
+
 if (!SINGLE_INSTANCE) {
   app.quit();
 } else {
-  app.on("second-instance", () => {
+  // Windows/Linux first launch from a link: the link is on our own command line.
+  const launchLink = dialLinkFromArgv(process.argv.slice(1));
+  if (launchLink) handleDialLink(launchLink, "launch argv");
+
+  app.on("second-instance", (_event, argv) => {
+    const link = dialLinkFromArgv(argv.slice(1));
+    if (link) {
+      handleDialLink(link, "second-instance");
+      return;
+    }
     showWindow();
   });
 }
 
-function createMainWindow(): BrowserWindow {
+function createMainWindow(initialUrl: string = APP_URL): BrowserWindow {
   const win = new BrowserWindow({
     width: 1280,
     height: 800,
@@ -381,7 +450,7 @@ function createMainWindow(): BrowserWindow {
   const ua = win.webContents.getUserAgent() + ` EskewPhoneDesktop/${app.getVersion()}`;
   win.webContents.setUserAgent(ua);
 
-  loadAppUrl(win);
+  loadAppUrl(win, initialUrl);
 
   win.once("ready-to-show", () => {
     win.show();
@@ -578,6 +647,34 @@ function createMainWindow(): BrowserWindow {
     }
   });
 
+  // The web app asks before it unloads while a call is ringing or live
+  // (beforeunload). Electron's default is to cancel the unload SILENTLY, so a
+  // Call link, the tray Reload or a quit would just do nothing. Ask the person
+  // instead; the default button keeps them on the call.
+  win.webContents.on("will-prevent-unload", (event) => {
+    if (win.isDestroyed()) return;
+    if (!win.isVisible()) win.show(); // a sheet on a hidden window is never seen
+    const choice = dialog.showMessageBoxSync(win, {
+      type: "warning",
+      title: "Eskew Phone",
+      message: "A call is in progress. Leave anyway?",
+      detail: "Leaving this page hangs up the call.",
+      buttons: ["Stay on the call", "Leave anyway"],
+      defaultId: 0,
+      cancelId: 0,
+      noLink: true,
+    });
+    if (choice === 1) {
+      log.info("[main] unload during a call: user chose to leave");
+      event.preventDefault(); // ignore beforeunload; the navigation goes ahead
+      return;
+    }
+    log.info("[main] unload during a call: user chose to stay");
+    // The page stays put, so the load we may have started will never finish —
+    // don't let the hang backstop read that as a stuck load and reload.
+    clearLoadHangTimer();
+  });
+
   // Right-click Cut/Copy/Paste. Electron ships no default context menu, so
   // without this a right-click in any text field does nothing at all — which
   // is how staff ended up unable to paste a password into the login form.
@@ -724,7 +821,19 @@ app.whenReady().then(() => {
     callback(granted);
   });
 
-  mainWindow = createMainWindow();
+  // Claim eskewphone:// (Mac: declared in Info.plist by electron-builder
+  // "protocols"; Windows: written to HKCU\Software\Classes on every launch,
+  // so an auto-updated install picks it up without a reinstall). Skipped
+  // when running from source, where it would register the bare Electron binary.
+  if (app.isPackaged) {
+    const ok = app.setAsDefaultProtocolClient(DIAL_SCHEME);
+    log.info(`[main] ${DIAL_SCHEME}: handler registered=${ok} default=${app.isDefaultProtocolClient(DIAL_SCHEME)}`);
+  }
+
+  appReady = true;
+  const firstDial = pendingDial;
+  pendingDial = null;
+  mainWindow = createMainWindow(firstDial ? dialPageUrl(APP_URL, firstDial) : APP_URL);
   createTray({
     onShow: showWindow,
     onHide: hideWindow,
