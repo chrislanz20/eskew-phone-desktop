@@ -360,14 +360,26 @@ function openDial(req: DialRequest): void {
   // confirm path; the web app never dials without the Call press). No reload,
   // so no Twilio re-registration and nothing to interrupt.
   if (isDashboardPageLoaded(win)) {
+    // Delivered in place ONLY if the dashboard says its eskew:dial listener is
+    // mounted (window.__eskewDialReady, eskew-phone-system app/(dashboard)/
+    // layout.tsx). No flag — an older web deploy, a route change in flight —
+    // and the script dispatches nothing and returns false: load the page.
     const js =
+      "(function(){if(window.__eskewDialReady!==true)return false;" +
       "window.dispatchEvent(new CustomEvent('eskew:dial',{detail:{number:" +
       JSON.stringify(req.number) +
       (req.name ? ",name:" + JSON.stringify(req.name) : "") +
-      ",autoCall:true}})); true";
+      ",autoCall:true}}));return true})()";
     win.webContents
       .executeJavaScript(js)
-      .then(() => log.info("[main] dial link offered in-page"))
+      .then((delivered: unknown) => {
+        if (delivered === true) {
+          log.info("[main] dial link offered in-page");
+          return;
+        }
+        log.info("[main] page not ready for an in-page dial — loading the dial page");
+        if (!win.isDestroyed()) loadAppUrl(win, url);
+      })
       .catch(() => {
         log.warn("[main] in-page dial failed — loading the dial page instead");
         if (!win.isDestroyed()) loadAppUrl(win, url);

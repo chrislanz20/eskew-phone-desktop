@@ -12,13 +12,15 @@
 //  - scheme eskewphone:, the "dial" action and nothing else (no user, password,
 //    port or extra path)
 //  - exactly one `number`: an optional "+" then digits only, and then the
-//    phone web app's OWN number rule (eskew-phone-system lib/native-dial-intent
-//    numberFromDialUrl, copied in normalizeDialNumber below): returned as E.164
-//  - `name` is display-only, cleaned by the web app's own rule (lib/dial-link
-//    cleanDialName, copied): control/format characters removed, whitespace
+//    phone web app's OWN number rule (eskew-phone-system origin/main
+//    lib/native-dial-intent.ts numberFromDialUrl, which its lib/dial-link.ts
+//    dialFromSearch runs on ?dial=; copied in normalizeDialNumber): E.164
+//  - `name` is display-only, cleaned by the web app's own rule (eskew-phone-
+//    system origin/main lib/dial-link.ts cleanDialName, copied): control/format characters removed, whitespace
 //    collapsed, dropped if it carries 7+ digits, cut to 60 characters
 //  These copies matter because a warm window gets the number IN-PAGE (the
-//  eskew:dial event), which skips the web app's ?dial= reader.
+//  eskew:dial event), which skips the web app's ?dial= reader
+//  (dialFromSearch); the cold path goes through that reader as well.
 //  - every other parameter is dropped; the target address is ALWAYS built
 //    from the app's own base URL, never from anything in the link
 //
