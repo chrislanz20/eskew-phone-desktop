@@ -1,6 +1,6 @@
 {
   "name": "eskew-phone-desktop",
-  "version": "1.0.18",
+  "version": "1.0.19",
   "description": "Eskew Phone — desktop wrapper for eskewphone.info",
   "main": "dist/main.js",
   "author": {
@@ -12,6 +12,7 @@
   "scripts": {
     "clean": "rimraf dist out",
     "build:ts": "tsc -p tsconfig.json",
+    "check:dial-link": "npm run build:ts && node scripts/check-dial-link.js",
     "dev": "npm run build:ts && electron .",
     "start": "electron .",
     "build:mac": "npm run clean && npm run build:ts && electron-builder --mac --publish never",
@@ -40,6 +41,14 @@
       "output": "out"
     },
     "afterSign": "scripts/notarize.js",
+    "protocols": [
+      {
+        "name": "Eskew Phone dial link",
+        "schemes": [
+          "eskewphone"
+        ]
+      }
+    ],
     "files": [
       "dist/**/*",
       "assets/**/*",
