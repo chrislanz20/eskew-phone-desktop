@@ -353,9 +353,51 @@ function openDial(req: DialRequest): void {
   win.show();
   win.focus();
   if (process.platform === "darwin") app.focus({ steal: true });
-  // A live call: the web app's beforeunload guard fires and the
-  // will-prevent-unload handler asks first (default = stay on the call).
+
+  // Warm window already on a signed-in phone page: hand the number to the page
+  // IN PLACE — the same eskew:dial event every Call button in the web app
+  // fires, so it opens the same "Call …?" confirm (autoCall:true is the
+  // confirm path; the web app never dials without the Call press). No reload,
+  // so no Twilio re-registration and nothing to interrupt.
+  if (isDashboardPageLoaded(win)) {
+    const js =
+      "window.dispatchEvent(new CustomEvent('eskew:dial',{detail:{number:" +
+      JSON.stringify(req.number) +
+      (req.name ? ",name:" + JSON.stringify(req.name) : "") +
+      ",autoCall:true}})); true";
+    win.webContents
+      .executeJavaScript(js)
+      .then(() => log.info("[main] dial link offered in-page"))
+      .catch(() => {
+        log.warn("[main] in-page dial failed — loading the dial page instead");
+        if (!win.isDestroyed()) loadAppUrl(win, url);
+      });
+    return;
+  }
+  // Cold, loading, error page, login, or any page outside the dashboard: load
+  // /calls?dial=. Signed out, the web app parks the number through /login and
+  // offers it after sign-in. During a live call the web app's beforeunload
+  // guard fires and will-prevent-unload asks first (default = Stay).
   loadAppUrl(win, url);
+}
+
+// The dashboard routes of the phone web app (eskew-phone-system app/(dashboard)):
+// its layout is what listens for eskew:dial. /login, /auth, /install and the
+// public pages do not, so they get the /calls?dial= load instead.
+const DASHBOARD_SECTIONS = new Set([
+  "analytics", "calls", "contacts", "dialer", "messages",
+  "phones-today", "settings", "team", "voicemails", "workflows",
+]);
+
+function isDashboardPageLoaded(win: BrowserWindow): boolean {
+  if (isShowingErrorPage || win.webContents.isLoading()) return false;
+  try {
+    const u = new URL(win.webContents.getURL());
+    if (u.origin !== new URL(APP_URL).origin) return false;
+    return DASHBOARD_SECTIONS.has(u.pathname.split("/")[1] ?? "");
+  } catch {
+    return false;
+  }
 }
 
 // macOS: must be registered before "ready" to catch the link that launched us.
@@ -653,23 +695,31 @@ function createMainWindow(initialUrl: string = APP_URL): BrowserWindow {
   // instead; the default button keeps them on the call.
   win.webContents.on("will-prevent-unload", (event) => {
     if (win.isDestroyed()) return;
-    if (!win.isVisible()) win.show(); // a sheet on a hidden window is never seen
+    // A sheet on a hidden or minimized window is never seen.
+    if (win.isMinimized()) win.restore();
+    win.show();
+    win.focus();
+    // Neutral words: the web app also guards unsaved Workflows edits.
     const choice = dialog.showMessageBoxSync(win, {
       type: "warning",
       title: "Eskew Phone",
-      message: "A call is in progress. Leave anyway?",
-      detail: "Leaving this page hangs up the call.",
-      buttons: ["Stay on the call", "Leave anyway"],
+      message: "Leave this page?",
+      detail: "A live call will hang up and unsaved changes will be lost.",
+      buttons: ["Stay", "Leave"],
       defaultId: 0,
       cancelId: 0,
       noLink: true,
     });
     if (choice === 1) {
-      log.info("[main] unload during a call: user chose to leave");
+      log.info("[main] unload guarded by the page: user chose to leave");
       event.preventDefault(); // ignore beforeunload; the navigation goes ahead
       return;
     }
-    log.info("[main] unload during a call: user chose to stay");
+    log.info("[main] unload guarded by the page: user chose to stay");
+    // A tray Quit / Restart Now set quitting mode before this close was
+    // refused. Undo it, or the next click on the window's X really quits
+    // instead of hiding to the tray, and the phone stops ringing.
+    isQuitting = false;
     // The page stays put, so the load we may have started will never finish —
     // don't let the hang backstop read that as a stuck load and reload.
     clearLoadHangTimer();

@@ -11,9 +11,14 @@
 // Strict on purpose — anything on a web page can fire an eskewphone:// link:
 //  - scheme eskewphone:, the "dial" action and nothing else (no user, password,
 //    port or extra path)
-//  - exactly one `number`: an optional "+" then 7–18 digits, nothing else
-//  - `name` is display-only: control/format characters removed, whitespace
-//    collapsed, cut to 80 characters (the web app cuts again, at 60)
+//  - exactly one `number`: an optional "+" then digits only, and then the
+//    phone web app's OWN number rule (eskew-phone-system lib/native-dial-intent
+//    numberFromDialUrl, copied in normalizeDialNumber below): returned as E.164
+//  - `name` is display-only, cleaned by the web app's own rule (lib/dial-link
+//    cleanDialName, copied): control/format characters removed, whitespace
+//    collapsed, dropped if it carries 7+ digits, cut to 60 characters
+//  These copies matter because a warm window gets the number IN-PAGE (the
+//  eskew:dial event), which skips the web app's ?dial= reader.
 //  - every other parameter is dropped; the target address is ALWAYS built
 //    from the app's own base URL, never from anything in the link
 //
@@ -21,8 +26,31 @@
 
 export const DIAL_SCHEME = "eskewphone";
 const MAX_LINK_CHARS = 1024;
-const MAX_NAME_CHARS = 80;
-const NUMBER_RE = /^\+?\d{7,18}$/;
+const MAX_NAME_CHARS = 60;
+const MAX_DIAL_CHARS = 15;
+const NUMBER_RE = /^(\+)?(\d+)$/;
+
+/** "8565195011" → "+18565195011"; "+44…"/"0044…"/"011 44…" → "+44…"; anything the
+    phone app would refuse (short codes, 911, 7–9 digits, area code 0/1,
+    +0…, over 15 digits) → null. Same order and rules as the web app. */
+export function normalizeDialNumber(raw: string): string | null {
+  const m = NUMBER_RE.exec(raw);
+  if (!m) return null;
+  let international = m[1] === "+";
+  let digits = m[2];
+  if (!international) {
+    if (digits.startsWith("011")) { international = true; digits = digits.slice(3); }
+    else if (digits.startsWith("00")) { international = true; digits = digits.slice(2); }
+  }
+  if (international) {
+    if (digits.length < 10 || digits.length > MAX_DIAL_CHARS) return null;
+    if (digits.startsWith("0")) return null;
+    return `+${digits}`;
+  }
+  if (digits.length === 10 && digits[0] >= "2") return `+1${digits}`;
+  if (digits.length === 11 && digits.startsWith("1") && digits[1] >= "2") return `+${digits}`;
+  return null;
+}
 
 export type DialRequest = { number: string; name?: string };
 
@@ -34,6 +62,8 @@ function cleanName(raw: string | null): string | undefined {
   );
   s = s.replace(/\s+/g, " ").trim();
   if (!s) return undefined;
+  // A name full of digits could read as the number being called — drop it.
+  if ((s.match(/\p{Nd}/gu) || []).length >= 7) return undefined;
   const chars = Array.from(s);
   if (chars.length > MAX_NAME_CHARS) s = chars.slice(0, MAX_NAME_CHARS).join("").trim();
   return s || undefined;
@@ -60,8 +90,9 @@ export function parseDialLink(raw: unknown): DialRequest | null {
   if (numbers.length !== 1) return null;
   // No trim: a "+" sent unencoded arrives as a space, and " 4420…" must not
   // quietly become a different (domestic-looking) number.
-  const number = numbers[0];
-  if (!NUMBER_RE.test(number)) return null;
+  if (numbers[0].length > 20) return null;
+  const number = normalizeDialNumber(numbers[0]);
+  if (!number) return null;
 
   const names = u.searchParams.getAll("name");
   if (names.length > 1) return null;
