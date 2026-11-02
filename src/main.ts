@@ -26,6 +26,7 @@ import {
   dialLinkFromArgv,
   dialPageUrl,
   parseDialLink,
+  parseOpenLink,
   type DialRequest,
 } from "./dial-link";
 
@@ -322,16 +323,31 @@ function recover(win: BrowserWindow, reason: string): void {
 // argv arrives in "second-instance"). A valid link brings the window to the
 // front on <APP_URL>/calls?dial=…&name=…, where the web app shows its usual
 // "Call …?" confirm. Nothing is ever dialled without that confirm. Anything
-// that is not a valid dial link is ignored (see dial-link.ts).
+// that is not a valid dial or open link is ignored (see dial-link.ts).
 // ---------------------------------------------------------------------------
+//
+// eskewphone://open (the case app's sidebar "Phone" item, v1.0.20) carries no
+// number: it only brings the window to the front, from the tray or hidden,
+// exactly like clicking the tray's Show. Before ready (a cold launch) it is
+// held in pendingOpen; the startup window is shown on ready-to-show anyway.
 let appReady = false;
 let pendingDial: DialRequest | null = null;
+let pendingOpen = false;
 
 function handleDialLink(raw: string, source: string): void {
   const req = parseDialLink(raw);
   // Never log the number or the name — only that a link came in.
   if (!req) {
-    log.warn(`[main] ignored an ${DIAL_SCHEME}: link that is not a valid dial link (${source})`);
+    if (parseOpenLink(raw)) {
+      log.info(`[main] open link received (${source})`);
+      if (!appReady) {
+        pendingOpen = true;
+        return;
+      }
+      bringToFront();
+      return;
+    }
+    log.warn(`[main] ignored an ${DIAL_SCHEME}: link that is not a valid dial or open link (${source})`);
     return;
   }
   log.info(`[main] dial link received (${source})`);
@@ -749,6 +765,13 @@ export function getMainWindow(): BrowserWindow | null {
   return mainWindow;
 }
 
+/** showWindow, and on macOS take focus from the browser the link came from
+    (the same steal openDial does). */
+function bringToFront(): void {
+  showWindow();
+  if (process.platform === "darwin") app.focus({ steal: true });
+}
+
 export function showWindow(): void {
   if (!mainWindow || mainWindow.isDestroyed()) {
     mainWindow = createMainWindow();
@@ -895,6 +918,10 @@ app.whenReady().then(() => {
   appReady = true;
   const firstDial = pendingDial;
   pendingDial = null;
+  // A cold launch from eskewphone://open needs nothing more: the window
+  // created here shows itself on ready-to-show, as on every launch.
+  if (pendingOpen) log.info("[main] launched by an open link");
+  pendingOpen = false;
   mainWindow = createMainWindow(firstDial ? dialPageUrl(APP_URL, firstDial) : APP_URL);
   createTray({
     onShow: showWindow,

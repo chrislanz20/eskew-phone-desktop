@@ -3,7 +3,7 @@
 // the page it opens is always built from the app's own address.
 "use strict";
 const assert = require("assert");
-const { parseDialLink, dialLinkFromArgv, dialPageUrl, normalizeDialNumber } = require("../dist/dial-link.js");
+const { parseDialLink, parseOpenLink, dialLinkFromArgv, dialPageUrl, normalizeDialNumber } = require("../dist/dial-link.js");
 
 const BASE = "https://eskewphone.info";
 let n = 0;
@@ -64,6 +64,38 @@ const refused = [
 ];
 for (const [raw, label] of refused) eq(parseDialLink(raw), null, `refused: ${label}`);
 
+// eskewphone://open (the case app's sidebar "Phone" item): accepted exactly
+for (const raw of ["eskewphone://open", "eskewphone://open/", "ESKEWPHONE://OPEN", "  eskewphone://open  "]) {
+  eq(parseOpenLink(raw), true, `open accepted: ${JSON.stringify(raw)}`);
+}
+const openRefused = [
+  ["", "empty"],
+  [null, "not a string"],
+  [42, "a number"],
+  ["eskewphone://open?", "bare query mark"],
+  ["eskewphone://open?x=1", "a query"],
+  ["eskewphone://open/?x=1", "a query after the slash"],
+  ["eskewphone://open#", "bare hash"],
+  ["eskewphone://open#calls", "a fragment"],
+  ["eskewphone://open/calls", "extra path"],
+  ["eskewphone://open//", "double slash"],
+  ["eskewphone://user@open", "username"],
+  ["eskewphone://user:pw@open", "credentials"],
+  ["eskewphone://open:99", "port"],
+  ["eskewphone://opener", "other host"],
+  ["eskewphone://dial", "dial action"],
+  ["eskewphone:open", "no slashes"],
+  ["eskewphone:///open", "open as a path"],
+  ["https://open", "https"],
+  ["eskewphonex://open", "other scheme"],
+  ["eskewphone://open" + "/".repeat(2000), "oversized link"],
+];
+for (const [raw, label] of openRefused) eq(parseOpenLink(raw), false, `open refused: ${label}`);
+// The two parsers never both claim a link.
+eq(parseDialLink("eskewphone://open"), null, "an open link is not a dial link");
+eq(parseOpenLink("eskewphone://dial?number=8565195011"), false, "a dial link is not an open link");
+eq(dialLinkFromArgv(["--flag", "eskewphone://open"]), "eskewphone://open", "argv finds an open link (Windows)");
+
 // Command line (Windows)
 eq(dialLinkFromArgv(["--allow-file-access-from-files", "eskewphone://dial?number=8565195011"]), "eskewphone://dial?number=8565195011", "argv finds the link after chromium flags");
 eq(dialLinkFromArgv(["C:\\x\\Eskew Phone.exe"]), null, "argv without a link");
@@ -76,4 +108,4 @@ const page = new URL(dialPageUrl(BASE, parseDialLink("eskewphone://dial?number=8
 eq([page.origin, page.pathname, page.searchParams.get("dial"), page.searchParams.get("name")], [BASE, "/calls", "+18565195011", "Jane Doe"], "round trip");
 
 eq(normalizeDialNumber("3175552210"), "+13175552210", "normalize direct");
-console.log(`dial-link: ${n} checks passed`);
+console.log(`dial-link + open-link: ${n} checks passed`);

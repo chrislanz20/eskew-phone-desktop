@@ -102,6 +102,31 @@ export function parseDialLink(raw: unknown): DialRequest | null {
   return name ? { number, name } : { number };
 }
 
+/** eskewphone://open → true, anything else → false.
+
+    The sidebar "Phone" item in the case app (Nov 1 2026): it just brings this
+    app to the front, with no number. Exactly "eskewphone://open" (an optional
+    trailing slash, any letter case): no query, no fragment, no user, password,
+    port or further path. It carries nothing, so nothing in it is ever used. */
+export function parseOpenLink(raw: unknown): boolean {
+  if (typeof raw !== "string") return false;
+  const link = raw.trim();
+  if (!link || link.length > MAX_LINK_CHARS) return false;
+  let u: URL;
+  try {
+    u = new URL(link);
+  } catch {
+    return false;
+  }
+  if (u.protocol.toLowerCase() !== `${DIAL_SCHEME}:`) return false;
+  if (u.username || u.password || u.port) return false;
+  if (u.hostname.toLowerCase() !== "open") return false;
+  if (u.pathname !== "" && u.pathname !== "/") return false;
+  // URL drops a bare "?" or "#" from .search/.hash, so check the text too.
+  if (u.search || u.hash || link.includes("?") || link.includes("#")) return false;
+  return true;
+}
+
 /** The first eskewphone: link on a command line (Windows hands it to us as an argument). */
 export function dialLinkFromArgv(argv: readonly string[]): string | null {
   for (const arg of argv) {
