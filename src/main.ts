@@ -20,6 +20,7 @@ import {
   relaunchWithCacheWipe,
 } from "./recovery";
 import { log } from "./logger";
+import { handleIncomingCall } from "./incoming-call";
 import { attachContextMenu, installApplicationMenu } from "./edit-menu";
 import {
   DIAL_SCHEME,
@@ -1012,30 +1013,16 @@ app.whenReady().then(() => {
   // (renderer audio keeps running in the tray) — we don't want two sounds.
   ipcMain.on(
     "eskew:incoming-call",
-    (_event, info: { from?: string; callerName?: string } = {}) => {
+    (_event, info: unknown) => {
       const win = mainWindow;
       if (!win || win.isDestroyed()) return;
-
-      // Bring the window into view. On Windows the OS may decline to steal
-      // foreground focus from whatever the user is actively in — flashFrame +
-      // the notification below are the reliable attention signals in that case.
-      if (win.isMinimized()) win.restore();
-      if (!win.isVisible()) win.show();
-      win.focus();
-      win.flashFrame(true);
-
-      if (Notification.isSupported()) {
-        const who =
-          info.callerName?.trim() ||
-          (info.from && info.from !== "Unknown" ? info.from : "Unknown caller");
-        const notif = new Notification({
-          title: "Incoming call",
-          body: who,
-          silent: true,
-        });
-        notif.on("click", () => showWindow());
-        notif.show();
-      }
+      // Whether the window jumps to the front is the person's own setting
+      // ("Bring the phone app to the front when it rings"); see incoming-call.ts.
+      handleIncomingCall(win, info, {
+        notificationSupported: Notification.isSupported(),
+        createNotification: (options) => new Notification(options),
+        showWindow,
+      });
     }
   );
 

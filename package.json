@@ -13,6 +13,7 @@
     "clean": "rimraf dist out",
     "build:ts": "tsc -p tsconfig.json",
     "check:dial-link": "npm run build:ts && node scripts/check-dial-link.js",
+    "check:ring-focus": "npm run build:ts && node scripts/check-ring-focus.js",
     "dev": "npm run build:ts && electron .",
     "start": "electron .",
     "build:mac": "npm run clean && npm run build:ts && electron-builder --mac --publish never",

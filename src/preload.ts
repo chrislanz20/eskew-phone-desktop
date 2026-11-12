@@ -7,8 +7,9 @@ import { contextBridge, ipcRenderer } from "electron";
 contextBridge.exposeInMainWorld("eskewDesktop", {
   setBadge: (count: number) => ipcRenderer.send("eskew:set-badge", count),
   // Fired on Twilio Device 'incoming' so the main process can surface the
-  // window, flash the taskbar, and pop a notification even when minimized/hidden.
-  incomingCall: (info: { from?: string; callerName?: string }) =>
+  // window (unless the person turned "bring to front" off: bringToFront:false),
+  // flash the taskbar, and pop a notification even when minimized/hidden.
+  incomingCall: (info: { from?: string; callerName?: string; bringToFront?: boolean }) =>
     ipcRenderer.send("eskew:incoming-call", info),
   // Fired when the call is answered, rejected, or cancelled — stops the flash.
   callEnded: () => ipcRenderer.send("eskew:call-ended"),
