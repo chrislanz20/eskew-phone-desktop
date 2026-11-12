@@ -69,4 +69,25 @@ for (const bad of [undefined, null, "x", 5, true]) {
 }
 eq(shouldBringToFront({ bringToFront: false }), false, "only literal false is OFF");
 
+// main.ts must hand the decision to handleIncomingCall and must NOT raise the
+// window itself in the incoming-call handler (a second, unguarded raise path
+// there would ignore the person's setting). Comments are stripped first.
+{
+  const fs = require("fs");
+  const path = require("path");
+  const raw = fs.readFileSync(path.join(__dirname, "..", "src", "main.ts"), "utf8");
+  const strip = (t) => t.replace(/\/\*[\s\S]*?\*\//g, "").replace(/^\s*\/\/.*$/gm, "");
+  const code = strip(raw);
+  const start = code.indexOf('ipcMain.on(\n    "eskew:incoming-call"');
+  assert.ok(start >= 0, "main.ts: the eskew:incoming-call handler was not found");
+  const next = code.indexOf("ipcMain.on(", start + 10);
+  assert.ok(next > start, "main.ts: could not find the end of the incoming-call handler");
+  const body = code.slice(start, next);
+  assert.ok(/handleIncomingCall\(\s*win\s*,\s*info\s*,/.test(body), "handler must call handleIncomingCall(win, info, ...)"); n++;
+  for (const banned of [/\.focus\(/, /\.show\(\)/, /\.restore\(/, /moveTop\(/, /setAlwaysOnTop\(/, /app\.focus\(/, /\bshowWindow\(/, /bringToFront\(/]) {
+    assert.ok(!banned.test(body), `incoming-call handler in main.ts must not call ${banned} itself`); n++;
+  }
+  assert.ok(/import \{ handleIncomingCall \} from "\.\/incoming-call"/.test(code), "main.ts must import handleIncomingCall"); n++;
+}
+
 console.log(`check-ring-focus: ${n} assertions passed`);
